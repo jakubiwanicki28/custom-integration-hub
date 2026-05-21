@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { createHmac } from 'crypto';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -32,5 +33,12 @@ export const config = {
 
   webhook: {
     secret: process.env.WEBHOOK_SECRET || '',
+  },
+
+  dashboard: {
+    password: process.env.DASHBOARD_PASSWORD || '',
+    cookieSecret: process.env.DASHBOARD_PASSWORD
+      ? createHmac('sha256', 'dashboard-cookie-key').update(process.env.DASHBOARD_PASSWORD).digest('hex')
+      : '',
   },
 } as const;

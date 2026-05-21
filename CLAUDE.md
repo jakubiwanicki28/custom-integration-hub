@@ -26,6 +26,7 @@ npm run typecheck    # Type-check without emitting
 src/
   server.ts                          # Express app, loads registry, mounts routes
   config.ts                          # Env validation — fails fast if vars missing
+  dashboard.ts                       # Admin dashboard (SSR HTML, auth, rate limiting)
   lib/
     logger.ts                        # Pino logger
     registry.ts                      # Reads integrations.json, dynamic imports
@@ -57,6 +58,10 @@ Statuses: `active` | `inactive` | `development`
 ### URL Pattern
 
 `https://custom-integration-hub.velocy.co/[integration-name]/[endpoint]`
+
+### Admin Dashboard
+
+`GET /dashboard` — password-protected status page showing all integrations and their status. Set `DASHBOARD_PASSWORD` in `.env` to enable. Rate-limited login (5 attempts/min, 15 min lockout). Session via signed HttpOnly cookie (7 days).
 
 ### Notes in Attio CRM
 

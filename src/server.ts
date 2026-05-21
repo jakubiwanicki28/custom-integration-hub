@@ -2,8 +2,10 @@ import express from 'express';
 import { config } from './config.js';
 import { logger } from './lib/logger.js';
 import { loadRegistry, getActiveIntegrations, getAllIntegrations, importIntegration } from './lib/registry.js';
+import { dashboardRouter } from './dashboard.js';
 
 const app = express();
+app.set('trust proxy', true);
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -33,6 +35,13 @@ app.get('/health', (_req, res) => {
 // Load registry and mount active integrations
 async function bootstrap() {
   loadRegistry();
+
+  // Dashboard (must be mounted after registry is loaded)
+  app.use('/dashboard', dashboardRouter);
+  if (config.dashboard.password) {
+    app.get('/', (_req, res) => res.redirect('/dashboard'));
+  }
+
   const active = getActiveIntegrations();
 
   for (const entry of active) {
