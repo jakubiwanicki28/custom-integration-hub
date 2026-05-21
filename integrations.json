@@ -1,0 +1,16 @@
+{
+  "integrations": [
+    {
+      "id": "cloudtalk-call-notes",
+      "name": "CloudTalk → Notatki z rozmów",
+      "description": "Transkrybuje i streszcza rozmowy z CloudTalk, tworzy notatki w Attio CRM (Person + Deal)",
+      "status": "active",
+      "type": "webhook",
+      "path": "/cloudtalk-call-notes",
+      "module": "./src/integrations/cloudtalk-call-notes/index.js",
+      "triggers": ["CloudTalk: Call Ended webhook"],
+      "targets": ["Attio: Person note", "Attio: Deal note"],
+      "addedAt": "2026-05-20"
+    }
+  ]
+}
