@@ -29,6 +29,7 @@ export const config = {
   openrouter: {
     apiKey: requireEnv('OPENROUTER_API_KEY'),
     baseUrl: 'https://openrouter.ai/api/v1',
+    model: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash-lite',
   },
 
   webhook: {
@@ -37,8 +38,9 @@ export const config = {
 
   dashboard: {
     password: process.env.DASHBOARD_PASSWORD || '',
-    cookieSecret: process.env.DASHBOARD_PASSWORD
-      ? createHmac('sha256', 'dashboard-cookie-key').update(process.env.DASHBOARD_PASSWORD).digest('hex')
-      : '',
+    cookieSecret: process.env.DASHBOARD_SECRET
+      || (process.env.DASHBOARD_PASSWORD
+        ? createHmac('sha256', 'dashboard-cookie-key').update(process.env.DASHBOARD_PASSWORD).digest('hex')
+        : ''),
   },
 } as const;

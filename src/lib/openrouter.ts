@@ -9,8 +9,8 @@ const headers = {
   'Content-Type': 'application/json',
 };
 
-const TRANSCRIPTION_MODEL = 'google/gemini-2.5-flash-lite';
-const SUMMARIZATION_MODEL = 'google/gemini-2.5-flash-lite';
+// Model configurable via OPENROUTER_MODEL env var
+const getModel = () => config.openrouter.model;
 
 interface ChatCompletionResponse {
   choices: Array<{
@@ -86,7 +86,7 @@ export async function transcribeAudio(audioBuffer: Buffer): Promise<string | nul
     },
   ];
 
-  return chatCompletion(TRANSCRIPTION_MODEL, messages);
+  return chatCompletion(getModel(), messages);
 }
 
 export async function summarizeTranscript(
@@ -111,7 +111,7 @@ Pisz zwięźle i konkretnie. Skup się na informacjach istotnych dla sprzedaży.
 Transkrypcja:
 ${transcript}`;
 
-  return chatCompletion(SUMMARIZATION_MODEL, [
+  return chatCompletion(getModel(), [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userMessage },
   ]);
@@ -164,7 +164,7 @@ Kontekst: rozmowa ${callMeta.direction === 'outgoing' ? 'wychodząca' : 'przycho
     },
   ];
 
-  const result = await chatCompletion(TRANSCRIPTION_MODEL, messages);
+  const result = await chatCompletion(getModel(), messages);
   if (!result) return null;
 
   // Split into transcript and summary sections
