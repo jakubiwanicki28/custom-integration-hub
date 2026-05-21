@@ -126,6 +126,75 @@ async function processCall(payload: CloudTalkWebhookPayload): Promise<void> {
   log.info({ callId, personName, dealName }, 'Call processing complete');
 }
 
+// Manual trigger for test panel — returns result instead of void
+export interface ProcessResult {
+  success: boolean;
+  personName?: string;
+  dealName?: string;
+  notesCreated?: number;
+  error?: string;
+}
+
+export async function processCallManual(callId: string): Promise<ProcessResult> {
+  try {
+    const call = await cloudtalk.getCallDetails(callId);
+    if (!call) return { success: false, error: 'Nie znaleziono rozmowy w CloudTalk' };
+
+    if (call.duration < MIN_CALL_DURATION) {
+      return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };
+    }
+
+    const phoneNumber = call.externalNumber;
+    if (!phoneNumber) return { success: false, error: 'Brak numeru telefonu' };
+
+    let person = await attio.findPersonByPhone(phoneNumber);
+    if (!person && call.contactEmails.length > 0) {
+      for (const email of call.contactEmails) {
+        person = await attio.findPersonByEmail(email);
+        if (person) break;
+      }
+    }
+    if (!person) return { success: false, error: `Osoba ${phoneNumber} nie znaleziona w Attio` };
+
+    const personName = attio.getPersonName(person);
+    const deal = await attio.pickBestDeal(person);
+    const dealName = deal ? attio.getDealName(deal) : null;
+
+    const aiResult = await transcribeCall(call);
+    const { personNote, dealNote } = formatNote({
+      call, dealName,
+      summary: aiResult?.summary ?? null,
+      transcript: aiResult?.transcript ?? null,
+    });
+
+    let notesCreated = 0;
+
+    const personNoteId = await attio.createNote({
+      parentObject: 'people',
+      parentRecordId: person.id.record_id,
+      title: personNote.title,
+      content: personNote.content,
+    });
+    if (personNoteId) notesCreated++;
+
+    if (dealNote && deal) {
+      const dealNoteId = await attio.createNote({
+        parentObject: 'deals',
+        parentRecordId: deal.id.record_id,
+        title: dealNote.title,
+        content: dealNote.content,
+      });
+      if (dealNoteId) notesCreated++;
+    }
+
+    return { success: true, personName, dealName: dealName ?? undefined, notesCreated };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Nieznany błąd';
+    log.error({ callId, err }, 'Manual processing failed');
+    return { success: false, error: message };
+  }
+}
+
 export async function webhookHandler(req: Request, res: Response): Promise<void> {
   const payload = req.body as CloudTalkWebhookPayload;
 

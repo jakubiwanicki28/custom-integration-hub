@@ -32,6 +32,10 @@ export interface CloudTalkCall {
 
 interface CdrResponse {
   responseData: {
+    itemsCount: number;
+    pageCount: number;
+    pageNumber: number;
+    limit: number;
     data: Array<{
       Cdr: {
         id: string;
@@ -95,17 +99,29 @@ export async function getCallDetails(callId: string): Promise<CloudTalkCall | nu
   return parseCall(entries[0]);
 }
 
-export async function getRecentCalls(limit = 10): Promise<CloudTalkCall[]> {
-  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}`;
+export interface CallsPage {
+  calls: CloudTalkCall[];
+  totalPages: number;
+  currentPage: number;
+  totalItems: number;
+}
+
+export async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
+  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}&page=${page}`;
   const res = await fetch(url, { headers });
 
   if (!res.ok) {
     log.error({ status: res.status }, 'Failed to fetch recent calls');
-    return [];
+    return { calls: [], totalPages: 0, currentPage: page, totalItems: 0 };
   }
 
   const data: CdrResponse = await res.json();
-  return (data.responseData?.data ?? []).map(parseCall);
+  return {
+    calls: (data.responseData?.data ?? []).map(parseCall),
+    totalPages: data.responseData?.pageCount ?? 0,
+    currentPage: data.responseData?.pageNumber ?? page,
+    totalItems: data.responseData?.itemsCount ?? 0,
+  };
 }
 
 export async function downloadRecording(callId: string): Promise<Buffer | null> {

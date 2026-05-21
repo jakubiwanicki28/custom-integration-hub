@@ -261,6 +261,9 @@ When creating notes that relate to a deal, create TWO notes:
 
 If no deal is found, create only the Person note.
 
+**Every integration must have a test panel:**
+Each integration must export a `processCallManual` (or equivalent `process[X]Manual`) function that runs the pipeline synchronously and returns a result object `{ success, error?, ...details }`. The dashboard has a test page at `/dashboard/test/[integration-id]` that lists source data (e.g., recent calls) and lets you manually trigger the pipeline on individual records. This allows testing without waiting for production webhooks. Never deploy an integration that can only be tested via the real trigger.
+
 **Error handling — log and continue, don't crash:**
 Integrations run in the same process. An unhandled exception kills everything. Always wrap async pipelines in try/catch and log errors. Never let a single webhook failure bring down the server.
 
@@ -291,15 +294,17 @@ All secrets go in `.env` (git-ignored). The `config.ts` file validates them at s
 
 6. **Implement handler.ts** — the pipeline. Follow the respond-immediately-process-async pattern for webhooks.
 
-7. **Test locally**: `npm run dev` + `curl` to simulate the trigger.
+7. **Add test panel** — Export a `process[X]Manual(id)` function from `handler.ts` that returns `{ success, error?, ...details }`. Add test routes in `src/dashboard.ts` under `/dashboard/test/[integration-id]` that list source data and allow manual triggering.
 
-8. **Set status to `"active"`** in `integrations.json`.
+8. **Test locally**: `npm run dev` → go to `/dashboard/test/[integration-id]` → trigger manually on real data and verify results.
 
-9. **Type-check and build**: `npm run typecheck && npm run build`
+9. **Set status to `"active"`** in `integrations.json`.
 
-10. **Deploy**: Commit to `dev`, push, on VPS: `git pull && npm install && npm run build && pm2 restart custom-integration-hub`.
+10. **Type-check and build**: `npm run typecheck && npm run build`
 
-11. **Configure the trigger**: Set up the webhook URL or cron in the external service.
+11. **Deploy**: Commit to `dev`, push, on VPS: `git pull && npm install && npm run build && pm2 restart custom-integration-hub`.
+
+12. **Configure the trigger**: Set up the webhook URL or cron in the external service.
 
 ### CRM Reference
 

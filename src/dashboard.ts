@@ -2,6 +2,8 @@ import { Router, type Request, type Response } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { config } from './config.js';
 import { getAllIntegrations, type IntegrationEntry } from './lib/registry.js';
+import * as cloudtalk from './lib/cloudtalk.js';
+import { processCallManual, type ProcessResult } from './integrations/cloudtalk-call-notes/handler.js';
 
 export const dashboardRouter = Router();
 
@@ -154,6 +156,39 @@ dashboardRouter.post('/logout', (_req: Request, res: Response) => {
   res.redirect(303, '/dashboard');
 });
 
+// --- Test Panel: CloudTalk Call Notes ---
+
+dashboardRouter.get('/test/cloudtalk-call-notes', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+
+  const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+  const result = req.query.result as string | undefined;
+  const callsPage = await cloudtalk.getRecentCalls(5, page);
+
+  res.send(renderTestPanel(callsPage.calls, callsPage.currentPage, callsPage.totalPages, result));
+});
+
+dashboardRouter.post('/test/cloudtalk-call-notes/process', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+
+  const callId = req.body?.call_id;
+  if (!callId) {
+    res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent('error:Brak call_id'));
+    return;
+  }
+
+  const result = await processCallManual(callId);
+
+  let msg: string;
+  if (result.success) {
+    msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? 'brak deala'} | ${result.notesCreated ?? 0} notatek`;
+  } else {
+    msg = `error:${result.error ?? 'Nieznany błąd'}`;
+  }
+
+  res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent(msg));
+});
+
 // --- HTML Rendering ---
 
 function renderLoginPage(error?: string): string {
@@ -222,6 +257,9 @@ function renderDashboardPage(data: { uptime: number; integrations: IntegrationEn
       <div class="tags">
         ${i.triggers.map(t => `<span class="tag tag-trigger">${escapeHtml(t)}</span>`).join('')}
         ${i.targets.map(t => `<span class="tag tag-target">${escapeHtml(t)}</span>`).join('')}
+      </div>
+      <div style="margin-top:12px">
+        <a href="/dashboard/test/${escapeHtml(i.id)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Testuj &rarr;</a>
       </div>
     </div>
   `).join('');
@@ -306,6 +344,119 @@ function renderDashboardPage(data: { uptime: number; integrations: IntegrationEn
     </div>
 
     ${integrationCards}
+
+    <footer>custom-integration-hub.velocy.co</footer>
+  </div>
+</body>
+</html>`;
+}
+
+function renderTestPanel(calls: cloudtalk.CloudTalkCall[], currentPage: number, totalPages: number, resultParam?: string): string {
+  let flashHtml = '';
+  if (resultParam) {
+    const isError = resultParam.startsWith('error:');
+    const message = resultParam.replace(/^(ok|error):/, '');
+    flashHtml = `<div class="flash ${isError ? 'flash-error' : 'flash-ok'}">${isError ? 'Błąd: ' : 'Sukces: '}${escapeHtml(message)}</div>`;
+  }
+
+  const rows = calls.map(c => {
+    const date = new Date(c.startedAt);
+    const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+    const dir = c.type === 'outgoing' ? 'Wych.' : c.type === 'incoming' ? 'Przych.' : 'Wewn.';
+    const dur = c.duration >= 60 ? `${Math.floor(c.duration / 60)}m ${c.duration % 60}s` : `${c.duration}s`;
+    return `
+      <tr>
+        <td>${dateStr}</td>
+        <td><code>${escapeHtml(c.externalNumber)}</code></td>
+        <td>${dir}</td>
+        <td>${dur}</td>
+        <td>${escapeHtml(c.agentName)}</td>
+        <td>${c.recorded ? '<span style="color:#3fb950">Tak</span>' : '<span style="color:#484f58">Nie</span>'}</td>
+        <td>
+          <form method="POST" action="/dashboard/test/cloudtalk-call-notes/process" style="display:inline">
+            <input type="hidden" name="call_id" value="${c.id}">
+            <button type="submit" class="btn-process">Przetwórz</button>
+          </form>
+        </td>
+      </tr>`;
+  }).join('');
+
+  const paginationItems: string[] = [];
+  if (currentPage > 1) {
+    paginationItems.push(`<a href="/dashboard/test/cloudtalk-call-notes?page=${currentPage - 1}" class="page-link">&larr; Poprzednia</a>`);
+  }
+  paginationItems.push(`<span class="page-info">Strona ${currentPage} z ${totalPages}</span>`);
+  if (currentPage < totalPages) {
+    paginationItems.push(`<a href="/dashboard/test/cloudtalk-call-notes?page=${currentPage + 1}" class="page-link">Następna &rarr;</a>`);
+  }
+
+  return `<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Test: CloudTalk Call Notes — Integration Hub</title>
+  <link rel="icon" href="data:,">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; min-height: 100vh; padding: 24px; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+    h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; }
+    .back-link { color: #58a6ff; text-decoration: none; font-size: 14px; }
+    .back-link:hover { text-decoration: underline; }
+    .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+    .flash-ok { background: #23863633; border: 1px solid #238636; color: #3fb950; }
+    .flash-error { background: #da363433; border: 1px solid #da3634; color: #f85149; }
+    table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden; }
+    th { background: #1c2129; text-align: left; padding: 10px 12px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+    td { padding: 10px 12px; border-top: 1px solid #21262d; font-size: 13px; }
+    tr:hover td { background: #1c2129; }
+    code { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #79c0ff; }
+    .btn-process { background: #1f6feb; color: #fff; border: none; padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .btn-process:hover { background: #388bfd; }
+    .pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 16px; }
+    .page-link { color: #58a6ff; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; }
+    .page-link:hover { border-color: #58a6ff; }
+    .page-info { font-size: 13px; color: #8b949e; }
+    footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
+    @media (max-width: 700px) {
+      table { font-size: 12px; }
+      th, td { padding: 8px 6px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <a href="/dashboard" class="back-link">&larr; Dashboard</a>
+        <h1 style="margin-top:8px">Test: CloudTalk Call Notes</h1>
+      </div>
+    </header>
+
+    ${flashHtml}
+
+    <table>
+      <thead>
+        <tr>
+          <th>Data</th>
+          <th>Numer</th>
+          <th>Kierunek</th>
+          <th>Czas</th>
+          <th>Agent</th>
+          <th>Nagranie</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows || '<tr><td colspan="7" style="text-align:center;color:#484f58;padding:20px">Brak rozmów</td></tr>'}
+      </tbody>
+    </table>
+
+    <div class="pagination">
+      ${paginationItems.join('')}
+    </div>
 
     <footer>custom-integration-hub.velocy.co</footer>
   </div>
