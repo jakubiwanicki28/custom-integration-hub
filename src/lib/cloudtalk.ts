@@ -84,7 +84,8 @@ function parseCall(entry: CdrResponse['responseData']['data'][0]): CloudTalkCall
 }
 
 export async function getCallDetails(callId: string): Promise<CloudTalkCall | null> {
-  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=1&id=${callId}`;
+  // CloudTalk CDR list doesn't support filtering by ID — fetch batch and find
+  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=100`;
   const res = await fetch(url, { headers });
 
   if (!res.ok) {
@@ -93,10 +94,15 @@ export async function getCallDetails(callId: string): Promise<CloudTalkCall | nu
   }
 
   const data: CdrResponse = await res.json();
-  const entries = data.responseData?.data;
-  if (!entries || entries.length === 0) return null;
+  const entries = data.responseData?.data ?? [];
+  const match = entries.find(e => e.Cdr.id === callId);
 
-  return parseCall(entries[0]);
+  if (!match) {
+    log.warn({ callId }, 'Call not found in recent calls');
+    return null;
+  }
+
+  return parseCall(match);
 }
 
 export interface CallsPage {
