@@ -137,8 +137,11 @@ export interface ProcessResult {
 
 export async function processCallManual(callId: string): Promise<ProcessResult> {
   try {
+    log.info({ callId }, 'Manual processing started');
     const call = await cloudtalk.getCallDetails(callId);
-    if (!call) return { success: false, error: 'Nie znaleziono rozmowy w CloudTalk' };
+    if (!call) return { success: false, error: `Nie znaleziono rozmowy ${callId} w CloudTalk` };
+
+    log.info({ callId, foundId: call.id, duration: call.duration, phone: call.externalNumber }, 'Call found');
 
     if (call.duration < MIN_CALL_DURATION) {
       return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };

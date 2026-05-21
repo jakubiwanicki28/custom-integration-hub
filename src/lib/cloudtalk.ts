@@ -95,13 +95,17 @@ export async function getCallDetails(callId: string): Promise<CloudTalkCall | nu
 
   const data: CdrResponse = await res.json();
   const entries = data.responseData?.data ?? [];
+
+  log.info({ callId, totalEntries: entries.length, firstId: entries[0]?.Cdr.id, lastId: entries[entries.length - 1]?.Cdr.id }, 'Searching for call in batch');
+
   const match = entries.find(e => e.Cdr.id === callId);
 
   if (!match) {
-    log.warn({ callId }, 'Call not found in recent calls');
+    log.warn({ callId, sampleIds: entries.slice(0, 5).map(e => e.Cdr.id) }, 'Call not found in recent calls');
     return null;
   }
 
+  log.info({ callId, duration: match.Cdr.billsec }, 'Call matched');
   return parseCall(match);
 }
 
