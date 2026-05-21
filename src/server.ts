@@ -70,8 +70,21 @@ async function bootstrap() {
     res.status(500).json({ error: 'Internal server error' });
   });
 
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.nodeEnv, activeIntegrations: active.length }, 'Custom Integration Hub started');
+  });
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    logger.info('SIGTERM received, shutting down gracefully');
+    server.close(() => {
+      logger.info('Server closed');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      logger.error('Forced shutdown after 30s timeout');
+      process.exit(1);
+    }, 30_000).unref();
   });
 }
 

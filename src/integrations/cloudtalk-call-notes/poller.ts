@@ -56,8 +56,10 @@ export function startPoller(): void {
 
   setTimeout(() => {
     log.info('Poller started');
-    poll();
-    const interval = setInterval(poll, POLL_INTERVAL);
+    poll().catch(err => log.error({ err }, 'Initial poll failed'));
+    const interval = setInterval(() => {
+      poll().catch(err => log.error({ err }, 'Poll cycle failed'));
+    }, POLL_INTERVAL);
     interval.unref();
   }, INITIAL_DELAY);
 }

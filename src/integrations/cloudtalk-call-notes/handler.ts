@@ -22,7 +22,8 @@ function cleanupProcessedCalls() {
 }
 
 // Clean up every 10 minutes
-setInterval(cleanupProcessedCalls, 10 * 60 * 1000);
+const cleanupInterval = setInterval(cleanupProcessedCalls, 10 * 60 * 1000);
+cleanupInterval.unref();
 
 export function isCallProcessed(callId: string): boolean {
   return processedCalls.has(callId);
