@@ -24,6 +24,14 @@ function cleanupProcessedCalls() {
 // Clean up every 10 minutes
 setInterval(cleanupProcessedCalls, 10 * 60 * 1000);
 
+export function isCallProcessed(callId: string): boolean {
+  return processedCalls.has(callId);
+}
+
+export function markCallProcessed(callId: string): void {
+  processedCalls.set(callId, Date.now());
+}
+
 const MIN_CALL_DURATION = 30; // seconds
 
 async function processCall(payload: CloudTalkWebhookPayload): Promise<void> {

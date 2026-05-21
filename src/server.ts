@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { logger } from './lib/logger.js';
 import { loadRegistry, getActiveIntegrations, getAllIntegrations, importIntegration } from './lib/registry.js';
 import { dashboardRouter } from './dashboard.js';
+import { startPoller as startCallNotesPoller } from './integrations/cloudtalk-call-notes/poller.js';
 
 const app = express();
 app.set('trust proxy', true);
@@ -56,6 +57,11 @@ async function bootstrap() {
 
   if (active.length === 0) {
     logger.warn('No active integrations found in registry');
+  }
+
+  // Start pollers for active integrations
+  if (active.some(i => i.id === 'cloudtalk-call-notes')) {
+    startCallNotesPoller();
   }
 
   // Global error handler

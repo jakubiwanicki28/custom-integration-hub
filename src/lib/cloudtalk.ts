@@ -134,6 +134,20 @@ export async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
   };
 }
 
+export async function getCallsSince(since: Date, limit = 20): Promise<CloudTalkCall[]> {
+  const dateFrom = since.toISOString();
+  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}&date_from=${dateFrom}`;
+  const res = await fetch(url, { headers });
+
+  if (!res.ok) {
+    log.error({ status: res.status, dateFrom }, 'Failed to fetch calls since date');
+    return [];
+  }
+
+  const data: CdrResponse = await res.json();
+  return (data.responseData?.data ?? []).map(parseCall);
+}
+
 export async function downloadRecording(callId: string): Promise<Buffer | null> {
   const url = `${config.cloudtalk.baseUrl}/calls/recording/${callId}.json`;
   const res = await fetch(url, { headers });
