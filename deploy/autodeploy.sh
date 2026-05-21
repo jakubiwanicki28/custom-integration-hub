@@ -20,15 +20,15 @@ while true; do
   if [ "$LOCAL" != "$REMOTE" ]; then
     echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') New commit detected: $REMOTE"
 
-    git pull origin "$BRANCH" --ff-only
-    npm install --silent
-    npm run build
-
-    if [ $? -eq 0 ]; then
+    if ! git pull origin "$BRANCH" --ff-only; then
+      echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') git pull FAILED"
+    elif ! npm install --silent; then
+      echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') npm install FAILED"
+    elif ! npm run build; then
+      echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') BUILD FAILED"
+    else
       pm2 restart custom-integration-hub
       echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') Deployed successfully"
-    else
-      echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') BUILD FAILED — not restarting"
     fi
   fi
 

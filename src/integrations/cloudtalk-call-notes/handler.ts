@@ -209,6 +209,11 @@ export async function processCallManual(callId: string): Promise<ProcessResult> 
 export async function webhookHandler(req: Request, res: Response): Promise<void> {
   const payload = req.body as CloudTalkWebhookPayload;
 
+  if (!payload?.call_id && !payload?.call_uuid) {
+    res.status(400).json({ error: 'Missing call_id or call_uuid' });
+    return;
+  }
+
   // Respond immediately so CloudTalk doesn't retry
   res.status(200).json({ status: 'accepted' });
 

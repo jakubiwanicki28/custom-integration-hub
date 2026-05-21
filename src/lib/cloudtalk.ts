@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
+import { fetchWithTimeout } from './fetch.js';
 
 const log = logger.child({ lib: 'cloudtalk' });
 
@@ -86,7 +87,7 @@ function parseCall(entry: CdrResponse['responseData']['data'][0]): CloudTalkCall
 export async function getCallDetails(callId: string): Promise<CloudTalkCall | null> {
   // CloudTalk CDR list doesn't support filtering by ID — fetch batch and find
   const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=100`;
-  const res = await fetch(url, { headers });
+  const res = await fetchWithTimeout(url, { headers });
 
   if (!res.ok) {
     log.error({ callId, status: res.status }, 'Failed to fetch call details');
@@ -118,7 +119,7 @@ export interface CallsPage {
 
 export async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
   const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}&page=${page}`;
-  const res = await fetch(url, { headers });
+  const res = await fetchWithTimeout(url, { headers });
 
   if (!res.ok) {
     log.error({ status: res.status }, 'Failed to fetch recent calls');
@@ -137,7 +138,7 @@ export async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
 export async function getCallsSince(since: Date, limit = 20): Promise<CloudTalkCall[]> {
   const dateFrom = since.toISOString();
   const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}&date_from=${dateFrom}`;
-  const res = await fetch(url, { headers });
+  const res = await fetchWithTimeout(url, { headers });
 
   if (!res.ok) {
     log.error({ status: res.status, dateFrom }, 'Failed to fetch calls since date');
@@ -150,7 +151,7 @@ export async function getCallsSince(since: Date, limit = 20): Promise<CloudTalkC
 
 export async function downloadRecording(callId: string): Promise<Buffer | null> {
   const url = `${config.cloudtalk.baseUrl}/calls/recording/${callId}.json`;
-  const res = await fetch(url, { headers });
+  const res = await fetchWithTimeout(url, { headers });
 
   if (!res.ok) {
     log.warn({ callId, status: res.status }, 'Recording not available');

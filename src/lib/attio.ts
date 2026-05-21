@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
+import { fetchWithTimeout } from './fetch.js';
 
 const log = logger.child({ lib: 'attio' });
 
@@ -78,7 +79,7 @@ export async function findPersonByPhone(phone: string): Promise<AttioPerson | nu
       limit: 1,
     };
 
-    const res = await fetch(`${config.attio.baseUrl}/objects/people/records/query`, {
+    const res = await fetchWithTimeout(`${config.attio.baseUrl}/objects/people/records/query`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -108,7 +109,7 @@ export async function findPersonByEmail(email: string): Promise<AttioPerson | nu
     limit: 1,
   };
 
-  const res = await fetch(`${config.attio.baseUrl}/objects/people/records/query`, {
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/objects/people/records/query`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -124,7 +125,7 @@ export async function findPersonByEmail(email: string): Promise<AttioPerson | nu
 }
 
 export async function getDealDetails(dealRecordId: string): Promise<AttioDeal | null> {
-  const res = await fetch(`${config.attio.baseUrl}/objects/deals/records/${dealRecordId}`, {
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/objects/deals/records/${dealRecordId}`, {
     headers,
   });
 
@@ -204,7 +205,7 @@ export async function createNote(params: {
     },
   };
 
-  const res = await fetch(`${config.attio.baseUrl}/notes`, {
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/notes`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

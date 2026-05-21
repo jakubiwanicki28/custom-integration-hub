@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
+import { fetchWithTimeout } from './fetch.js';
 
 const log = logger.child({ lib: 'openrouter' });
 
@@ -33,11 +34,11 @@ async function chatCompletion(
     messages,
   };
 
-  const res = await fetch(`${config.openrouter.baseUrl}/chat/completions`, {
+  const res = await fetchWithTimeout(`${config.openrouter.baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-  });
+  }, 120_000); // 2 min timeout — audio transcription can be slow
 
   if (!res.ok) {
     const errorBody = await res.text();
