@@ -21,7 +21,7 @@ while true; do
     echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') New commit detected: $REMOTE"
 
     git pull origin "$BRANCH" --ff-only
-    npm install --omit=dev --silent
+    npm install --silent
     npm run build
 
     if [ $? -eq 0 ]; then
