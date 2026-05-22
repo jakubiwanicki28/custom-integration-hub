@@ -21,7 +21,7 @@ export const config = {
   },
 
   slack: {
-    botToken: requireEnv('SLACK_BOT_TOKEN'),
+    botToken: process.env.SLACK_BOT_TOKEN || '',
   },
 
   cloudtalk: {
