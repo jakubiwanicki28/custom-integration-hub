@@ -99,7 +99,7 @@ function formatSlackBlocks(data: LeadNotificationData): { blocks: SlackBlock[]; 
   if (data.email) detailLines.push(`*Email:*  ${data.email}`);
   if (data.phone) detailLines.push(`*Telefon:*  ${data.phone}`);
 
-  const attioUrl = `https://app.attio.com/objects/${DEALS_OBJECT_ID}/records/${data.dealRecordId}`;
+  const attioUrl = `https://app.attio.com/${ATTIO_WORKSPACE_SLUG}/deals/record/${data.dealRecordId}/overview`;
 
   const blocks: SlackBlock[] = [
     {
@@ -129,7 +129,7 @@ function formatSlackBlocks(data: LeadNotificationData): { blocks: SlackBlock[]; 
   return { blocks, fallbackText };
 }
 
-const DEALS_OBJECT_ID = '1ec7de82-968c-4a65-9f3e-8c3c9bdbb84b';
+const ATTIO_WORKSPACE_SLUG = 'ww-partners';
 
 async function processListEntry(listId: string, dealRecordId: string, idempotencyKey?: string): Promise<void> {
   const mapping = LIST_CHANNEL_MAP.get(listId);
