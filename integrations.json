@@ -11,6 +11,18 @@
       "triggers": ["CloudTalk: Call Ended webhook"],
       "targets": ["Attio: Person note", "Attio: Deal note"],
       "addedAt": "2026-05-20"
+    },
+    {
+      "id": "slack-lead-notifications",
+      "name": "Attio → Slack: Nowe leady",
+      "description": "Powiadamia na Slacku o nowych leadach w listach kampanii Attio CRM",
+      "status": "development",
+      "type": "webhook",
+      "path": "/slack-lead-notifications",
+      "module": "./src/integrations/slack-lead-notifications/index.js",
+      "triggers": ["Attio: list-entry.created webhook"],
+      "targets": ["Slack: #nowe-leady-akademia", "Slack: #nowe-leady-raport"],
+      "addedAt": "2026-05-21"
     }
   ]
 }

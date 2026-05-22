@@ -8,7 +8,13 @@ import { startPoller as startCallNotesPoller } from './integrations/cloudtalk-ca
 const app = express();
 app.set('trust proxy', true);
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({
+  limit: '2mb',
+  verify: (_req, _res, buf) => {
+    // Store raw body for webhook signature verification
+    (_req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging

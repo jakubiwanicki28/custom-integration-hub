@@ -42,6 +42,21 @@ interface AttioNoteResponse {
   };
 }
 
+export interface AttioListEntry {
+  id: { workspace_id: string; list_id: string; entry_id: string };
+  parent_record_id: string;
+  created_at: string;
+  entry_values: Record<string, unknown[]>;
+}
+
+export interface AttioWebhook {
+  id: { workspace_id: string; webhook_id: string };
+  target_url: string;
+  subscriptions: Array<{ event_type: string; filter?: unknown }>;
+  status: 'active' | 'degraded' | 'inactive';
+  created_at: string;
+}
+
 // --- Phone number normalization ---
 
 function normalizePhone(phone: string): string {
@@ -227,4 +242,112 @@ export async function createNote(params: {
     'Note created'
   );
   return noteId;
+}
+
+// --- Person helpers ---
+
+export async function getPersonDetails(recordId: string): Promise<AttioPerson | null> {
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/objects/people/records/${recordId}`, {
+    headers,
+  });
+
+  if (!res.ok) {
+    log.error({ status: res.status, recordId }, 'Failed to fetch person');
+    return null;
+  }
+
+  const data: { data: AttioPerson } = await res.json();
+  return data.data;
+}
+
+export function getPersonEmail(person: AttioPerson): string | null {
+  return person.values.email_addresses?.[0]?.email_address ?? null;
+}
+
+export function getPersonPhone(person: AttioPerson): string | null {
+  return person.values.phone_numbers?.[0]?.original_phone_number ?? null;
+}
+
+// --- List entries ---
+
+export async function queryListEntries(listId: string, limit = 5): Promise<AttioListEntry[]> {
+  const body = {
+    sorts: [{ direction: 'desc', attribute: 'created_at' }],
+    limit,
+    offset: 0,
+  };
+
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/lists/${listId}/entries/query`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    log.error({ status: res.status, listId }, 'Failed to query list entries');
+    return [];
+  }
+
+  const data: AttioQueryResponse<AttioListEntry> = await res.json();
+  return data.data;
+}
+
+// --- Webhooks ---
+
+export async function registerWebhook(
+  targetUrl: string,
+  subscriptions: Array<{ event_type: string; filter?: unknown }>,
+): Promise<{ webhookId: string; secret: string } | null> {
+  const body = {
+    data: {
+      target_url: targetUrl,
+      subscriptions,
+    },
+  };
+
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/webhooks`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.text();
+    log.error({ status: res.status, errorBody }, 'Failed to register webhook');
+    return null;
+  }
+
+  const data: { data: AttioWebhook & { secret: string } } = await res.json();
+  const webhookId = data.data.id.webhook_id;
+  log.info({ webhookId, targetUrl }, 'Attio webhook registered');
+  return { webhookId, secret: data.data.secret };
+}
+
+export async function listWebhooks(): Promise<AttioWebhook[]> {
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/webhooks`, {
+    headers,
+  });
+
+  if (!res.ok) {
+    log.error({ status: res.status }, 'Failed to list webhooks');
+    return [];
+  }
+
+  const data: AttioQueryResponse<AttioWebhook> = await res.json();
+  return data.data;
+}
+
+export async function deleteWebhook(webhookId: string): Promise<boolean> {
+  const res = await fetchWithTimeout(`${config.attio.baseUrl}/webhooks/${webhookId}`, {
+    method: 'DELETE',
+    headers,
+  });
+
+  if (!res.ok) {
+    log.error({ status: res.status, webhookId }, 'Failed to delete webhook');
+    return false;
+  }
+
+  log.info({ webhookId }, 'Attio webhook deleted');
+  return true;
 }

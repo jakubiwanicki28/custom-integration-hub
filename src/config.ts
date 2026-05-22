@@ -17,6 +17,11 @@ export const config = {
   attio: {
     apiKey: requireEnv('ATTIO_API_KEY'),
     baseUrl: 'https://api.attio.com/v2',
+    webhookSecret: process.env.ATTIO_WEBHOOK_SECRET || '',
+  },
+
+  slack: {
+    botToken: requireEnv('SLACK_BOT_TOKEN'),
   },
 
   cloudtalk: {
