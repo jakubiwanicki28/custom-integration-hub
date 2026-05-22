@@ -40,7 +40,8 @@ export function formatNote(params: {
   }
 
   // Call details section
-  sections.push(`---\n\n**Szczegóły rozmowy:** ${formatDirection(call.type)} | ${formatDuration(call.duration)} | Agent: ${call.agentName} | Tel: ${call.externalNumber}`);
+  const recordingLink = call.recordingLink ? ` | [Odsłuchaj nagranie](${call.recordingLink})` : '';
+  sections.push(`---\n\n**Szczegóły rozmowy:** ${formatDirection(call.type)} | ${formatDuration(call.duration)} | Agent: ${call.agentName} | Tel: ${call.externalNumber}${recordingLink}`);
 
   const content = sections.join('\n\n');
 
