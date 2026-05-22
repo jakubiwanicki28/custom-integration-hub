@@ -17,11 +17,19 @@ interface SlackTextObject {
   emoji?: boolean;
 }
 
+interface SlackButtonElement {
+  type: 'button';
+  text: SlackTextObject;
+  url?: string;
+  style?: 'primary' | 'danger';
+  action_id: string;
+}
+
 export interface SlackBlock {
-  type: 'header' | 'section' | 'context' | 'divider';
+  type: 'header' | 'section' | 'context' | 'divider' | 'actions';
   text?: SlackTextObject;
   fields?: SlackTextObject[];
-  elements?: SlackTextObject[];
+  elements?: (SlackTextObject | SlackButtonElement)[];
 }
 
 interface SlackPostMessageResponse {

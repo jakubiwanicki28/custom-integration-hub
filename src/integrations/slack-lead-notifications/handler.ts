@@ -95,17 +95,11 @@ async function enrichLeadData(dealRecordId: string, listId: string): Promise<Lea
 }
 
 function formatSlackBlocks(data: LeadNotificationData): { blocks: SlackBlock[]; fallbackText: string } {
-  const fields: SlackBlock['fields'] = [
-    { type: 'mrkdwn', text: `*Deal:*\n${data.dealName}` },
-    { type: 'mrkdwn', text: `*Etap:*\n${data.stage}` },
-  ];
+  const detailLines: string[] = [];
+  if (data.email) detailLines.push(`*Email:*  ${data.email}`);
+  if (data.phone) detailLines.push(`*Telefon:*  ${data.phone}`);
 
-  if (data.email) {
-    fields.push({ type: 'mrkdwn', text: `*Email:*\n${data.email}` });
-  }
-  if (data.phone) {
-    fields.push({ type: 'mrkdwn', text: `*Telefon:*\n${data.phone}` });
-  }
+  const attioUrl = `https://app.attio.com/objects/${DEALS_OBJECT_ID}/records/${data.dealRecordId}`;
 
   const blocks: SlackBlock[] = [
     {
@@ -114,16 +108,18 @@ function formatSlackBlocks(data: LeadNotificationData): { blocks: SlackBlock[]; 
     },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `*${data.personName}*` },
+      text: { type: 'mrkdwn', text: `*${data.personName}*\n${detailLines.join('\n')}` },
     },
     {
-      type: 'section',
-      fields,
-    },
-    {
-      type: 'context',
+      type: 'actions',
       elements: [
-        { type: 'mrkdwn', text: `Dodano: ${new Date().toLocaleString('pl-PL', { timeZone: 'Europe/Warsaw' })} | Attio CRM` },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Otwórz w Attio' },
+          url: attioUrl,
+          style: 'primary',
+          action_id: 'open_attio_deal',
+        },
       ],
     },
   ];
@@ -132,6 +128,8 @@ function formatSlackBlocks(data: LeadNotificationData): { blocks: SlackBlock[]; 
 
   return { blocks, fallbackText };
 }
+
+const DEALS_OBJECT_ID = '1ec7de82-968c-4a65-9f3e-8c3c9bdbb84b';
 
 async function processListEntry(listId: string, dealRecordId: string, idempotencyKey?: string): Promise<void> {
   const mapping = LIST_CHANNEL_MAP.get(listId);
