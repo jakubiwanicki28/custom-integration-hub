@@ -16,7 +16,7 @@
       "id": "slack-lead-notifications",
       "name": "Attio → Slack: Nowe leady",
       "description": "Powiadamia na Slacku o nowych leadach w listach kampanii Attio CRM",
-      "status": "development",
+      "status": "active",
       "type": "webhook",
       "path": "/slack-lead-notifications",
       "module": "./src/integrations/slack-lead-notifications/index.js",
