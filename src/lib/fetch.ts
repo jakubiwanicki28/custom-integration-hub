@@ -26,12 +26,12 @@ export async function fetchWithTimeout(
 
 /** Parse JSON from Response with safe error handling — never throws SyntaxError */
 export async function safeJson<T>(res: Response): Promise<T> {
+  const text = await safeText(res);
   try {
-    return await res.json() as T;
-  } catch (err) {
+    return JSON.parse(text) as T;
+  } catch {
     const hostname = safeHostname(res.url);
-    const body = await safeText(res).catch(() => '<unreadable>');
-    log.error({ url: res.url, status: res.status, body: body.slice(0, 500) },
+    log.error({ url: res.url, status: res.status, body: text.slice(0, 500) },
       `Failed to parse JSON from ${hostname}`);
     throw new Error(`Invalid JSON response from ${hostname} (status ${res.status})`);
   }

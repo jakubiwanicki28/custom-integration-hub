@@ -20,6 +20,9 @@ export function loadIntegrationCatalog(): IntegrationCatalogEntry[] {
   const filePath = resolve(process.cwd(), 'integrations.json');
   const raw = readFileSync(filePath, 'utf-8');
   const parsed: IntegrationCatalogFile = JSON.parse(raw);
+  if (!Array.isArray(parsed.integrations)) {
+    throw new Error('integrations.json: missing or invalid "integrations" array');
+  }
   _catalog = parsed.integrations;
   logger.info({ count: _catalog.length }, 'Integration catalog loaded');
   return _catalog;
@@ -45,6 +48,9 @@ export function loadOrganizations(): OrganizationEntry[] {
   const filePath = resolve(process.cwd(), 'organizations.json');
   const raw = readFileSync(filePath, 'utf-8');
   const parsed: OrganizationsFile = JSON.parse(raw);
+  if (!Array.isArray(parsed.organizations)) {
+    throw new Error('organizations.json: missing or invalid "organizations" array');
+  }
   _organizations = parsed.organizations;
   logger.info({ count: _organizations.length, orgs: _organizations.map(o => o.id) }, 'Organizations loaded');
   return _organizations;

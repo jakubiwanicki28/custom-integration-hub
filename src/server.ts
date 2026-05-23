@@ -73,9 +73,9 @@ async function bootstrap() {
     const orgLog = logger.child({ org: org.id });
 
     // Determine which services this org needs (union of all active integrations' requirements)
-    const activeIntegrations = org.integrations.filter(i => i.status === 'active');
+    const mountableIntegrations = org.integrations.filter(i => i.status === 'active' || i.status === 'development');
     const requiredServices = new Set<string>();
-    for (const orgInt of activeIntegrations) {
+    for (const orgInt of mountableIntegrations) {
       const catalogEntry = getCatalogEntry(orgInt.integrationId);
       if (catalogEntry) {
         for (const svc of catalogEntry.requiredServices) requiredServices.add(svc);
@@ -101,7 +101,7 @@ async function bootstrap() {
       : undefined;
 
     // Mount each active integration for this org
-    for (const orgInt of activeIntegrations) {
+    for (const orgInt of mountableIntegrations) {
       const catalogEntry = getCatalogEntry(orgInt.integrationId);
       if (!catalogEntry) {
         orgLog.warn({ integrationId: orgInt.integrationId }, 'Integration not found in catalog');

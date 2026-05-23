@@ -9,8 +9,9 @@ import type { AttioWebhookPayload, LeadNotificationData, ProcessLeadResult } fro
 const IDEMPOTENCY_TTL = 60 * 60 * 1000; // 1 hour
 
 export function createHandler(ctx: OrgContext) {
+  if (!ctx.clients.slack) throw new Error('slack-lead-notifications requires Slack client');
   const attio = ctx.clients.attio;
-  const slack = ctx.clients.slack!;
+  const slack = ctx.clients.slack;
   const log = ctx.log.child({ integration: 'slack-lead-notifications' });
   const webhookSecret = ctx.org.webhookSecret;
   const workspaceSlug = ctx.org.attioWorkspaceSlug;

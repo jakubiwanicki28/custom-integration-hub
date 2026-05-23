@@ -17,8 +17,9 @@ const IDEMPOTENCY_TTL = 60 * 60 * 1000; // 1 hour
 const MIN_CALL_DURATION = 30; // seconds
 
 export function createHandler(ctx: OrgContext, transcribeCall: (call: import('../../lib/cloudtalk.js').CloudTalkCall) => Promise<{ transcript: string; summary: string } | null>) {
+  if (!ctx.clients.cloudtalk) throw new Error('cloudtalk-call-notes handler requires CloudTalk client');
   const attio = ctx.clients.attio;
-  const cloudtalk = ctx.clients.cloudtalk!;
+  const cloudtalk = ctx.clients.cloudtalk;
   const log = ctx.log.child({ integration: 'cloudtalk-call-notes' });
 
   // Per-instance idempotency

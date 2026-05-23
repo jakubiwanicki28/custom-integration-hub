@@ -5,8 +5,9 @@ import { createPoller } from './poller.js';
 import { createRouter } from './routes.js';
 
 export function createIntegration(ctx: OrgContext): IntegrationInstance {
+  if (!ctx.clients.cloudtalk) throw new Error('cloudtalk-call-notes requires CloudTalk client');
   const log = ctx.log.child({ integration: 'cloudtalk-call-notes' });
-  const cloudtalk = ctx.clients.cloudtalk!;
+  const cloudtalk = ctx.clients.cloudtalk;
 
   const transcribeCall = createTranscriber(cloudtalk, log);
   const handler = createHandler(ctx, transcribeCall);

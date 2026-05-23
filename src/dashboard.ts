@@ -272,6 +272,11 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', asyn
     const targetUrl = `https://custom-integration-hub.velocy.co/${orgId}/slack-lead-notifications/webhook`;
     const listIds = Array.from(listChannelMap.keys());
 
+    if (listIds.length === 0) {
+      res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Brak skonfigurowanych list w organizations.json'));
+      return;
+    }
+
     const result = await attio.registerWebhook(targetUrl, [{
       event_type: 'list-entry.created',
       filter: { $or: listIds.map(id => ({ field: 'id.list_id', operator: 'equals', value: id })) },
@@ -535,7 +540,8 @@ function renderFlash(resultParam?: string): string {
 }
 
 function renderTestPanel(orgId: string, calls: CloudTalkCall[], currentPage: number, totalPages: number, resultParam?: string): string {
-  const basePath = `/dashboard/test/${orgId}/cloudtalk-call-notes`;
+  const safeOrgId = encodeURIComponent(orgId);
+  const basePath = `/dashboard/test/${safeOrgId}/cloudtalk-call-notes`;
 
   const rows = calls.map(c => {
     const date = new Date(c.startedAt);
@@ -557,7 +563,7 @@ function renderTestPanel(orgId: string, calls: CloudTalkCall[], currentPage: num
 
   const body = `
   <div class="container">
-    <header><div><a href="/dashboard?org=${orgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">CloudTalk Call Notes</h1></div></header>
+    <header><div><a href="/dashboard?org=${safeOrgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">CloudTalk Call Notes</h1></div></header>
     ${renderFlash(resultParam)}
     <div class="section-card">
     <table><thead><tr><th>Data</th><th>Numer</th><th>Kierunek</th><th>Czas</th><th>Agent</th><th>Nagranie</th><th></th></tr></thead>
@@ -579,7 +585,8 @@ function renderSlackLeadPanel(
   resultParam?: string,
   loadError?: string,
 ): string {
-  const basePath = `/dashboard/test/${orgId}/slack-lead-notifications`;
+  const safeOrgId = encodeURIComponent(orgId);
+  const basePath = `/dashboard/test/${safeOrgId}/slack-lead-notifications`;
 
   let flashHtml = renderFlash(resultParam);
   if (loadError) flashHtml += `<div class="flash flash-error">Błąd ładowania: ${escapeHtml(loadError)}</div>`;
@@ -596,7 +603,7 @@ function renderSlackLeadPanel(
     webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action-subtle">Zarejestruj ponownie</button></form>`;
   } else {
     webhookDot = webhook.status === 'degraded' ? 'status-dot-warn' : 'status-dot-error';
-    webhookLabel = `${webhook.status} <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
+    webhookLabel = `${escapeHtml(webhook.status)} <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
     webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action">Usuń i zarejestruj ponownie</button></form>`;
   }
 
@@ -618,7 +625,7 @@ function renderSlackLeadPanel(
 
   const body = `
   <div class="container">
-    <header><div><a href="/dashboard?org=${orgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">Slack Lead Notifications</h1></div></header>
+    <header><div><a href="/dashboard?org=${safeOrgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">Slack Lead Notifications</h1></div></header>
     ${flashHtml}
     <div class="section-card">
       <div class="section-title">Połączenia</div>
