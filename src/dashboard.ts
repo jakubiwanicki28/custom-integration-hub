@@ -244,30 +244,29 @@ dashboardRouter.get('/test/slack-lead-notifications', async (req: Request, res: 
 
   const result = req.query.result as string | undefined;
 
+  // Fetch all data in parallel
   let akademiaEntries: LeadEntry[] = [];
   let raportEntries: LeadEntry[] = [];
   let loadError = '';
+  let slackStatus: { ok: boolean; team?: string; error?: string } = { ok: false, error: 'nie sprawdzono' };
+  let webhook: attio.AttioWebhook | null = null;
 
   try {
-    [akademiaEntries, raportEntries] = await Promise.all([
+    const [akademia, raport, slackResult, webhooks] = await Promise.all([
       enrichListEntries('a87fbbdf-8cab-4630-a3cc-9f5756dc944a', 'Akademia Biznesu'),
       enrichListEntries('2e7cb019-4c0e-45c9-8998-c58590a733ef', 'Raport Strategiczny'),
+      slack.testConnection().catch(() => ({ ok: false, error: 'timeout' } as const)),
+      attio.listWebhooks().catch(() => [] as attio.AttioWebhook[]),
     ]);
+    akademiaEntries = akademia;
+    raportEntries = raport;
+    slackStatus = slackResult;
+    webhook = webhooks.find(w => w.target_url.includes('slack-lead-notifications')) ?? null;
   } catch (err) {
-    loadError = err instanceof Error ? err.message : 'Błąd ładowania danych z Attio';
+    loadError = err instanceof Error ? err.message : 'Błąd ładowania danych';
   }
 
-  // Fetch webhooks to show status
-  let webhooks: attio.AttioWebhook[] = [];
-  try {
-    webhooks = await attio.listWebhooks();
-  } catch { /* ignore */ }
-
-  const ourWebhooks = webhooks.filter(w =>
-    w.target_url.includes('slack-lead-notifications')
-  );
-
-  res.send(renderSlackLeadPanel(akademiaEntries, raportEntries, ourWebhooks, result, loadError));
+  res.send(renderSlackLeadPanel(akademiaEntries, raportEntries, slackStatus, webhook, result, loadError));
 });
 
 dashboardRouter.post('/test/slack-lead-notifications/send', async (req: Request, res: Response) => {
@@ -293,21 +292,19 @@ dashboardRouter.post('/test/slack-lead-notifications/send', async (req: Request,
   res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
 });
 
-dashboardRouter.post('/test/slack-lead-notifications/test-slack', async (req: Request, res: Response) => {
+dashboardRouter.post('/test/slack-lead-notifications/reset-webhook', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
 
-  const result = await slack.testConnection();
+  // Delete existing webhook if present
+  try {
+    const webhooks = await attio.listWebhooks();
+    const existing = webhooks.find(w => w.target_url.includes('slack-lead-notifications'));
+    if (existing) {
+      await attio.deleteWebhook(existing.id.webhook_id);
+    }
+  } catch { /* continue to registration */ }
 
-  const msg = result.ok
-    ? `ok:Połączono ze Slackiem (workspace: ${result.team ?? '?'})`
-    : `error:Błąd połączenia: ${result.error ?? 'Nieznany'}`;
-
-  res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
-});
-
-dashboardRouter.post('/test/slack-lead-notifications/register-webhooks', async (req: Request, res: Response) => {
-  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
-
+  // Register new webhook
   const targetUrl = 'https://custom-integration-hub.velocy.co/slack-lead-notifications/webhook';
   const listIds = Array.from(LIST_CHANNEL_MAP.keys());
 
@@ -329,24 +326,7 @@ dashboardRouter.post('/test/slack-lead-notifications/register-webhooks', async (
     return;
   }
 
-  const msg = `ok:Webhook zarejestrowany! ID: ${result.webhookId}. Secret: ${result.secret} — dodaj jako ATTIO_WEBHOOK_SECRET do .env`;
-  res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
-});
-
-dashboardRouter.post('/test/slack-lead-notifications/delete-webhook', async (req: Request, res: Response) => {
-  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
-
-  const webhookId = req.body?.webhook_id;
-  if (!webhookId) {
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Brak webhook_id'));
-    return;
-  }
-
-  const deleted = await attio.deleteWebhook(webhookId);
-  const msg = deleted
-    ? `ok:Webhook ${webhookId} usunięty`
-    : `error:Nie udało się usunąć webhooka ${webhookId}`;
-
+  const msg = `ok:Webhook zarejestrowany! Secret: ${result.secret} — dodaj jako ATTIO_WEBHOOK_SECRET do .env`;
   res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
 });
 
@@ -420,7 +400,7 @@ function renderDashboardPage(data: { uptime: number; integrations: IntegrationEn
         ${i.targets.map(t => `<span class="tag tag-target">${escapeHtml(t)}</span>`).join('')}
       </div>
       <div style="margin-top:12px">
-        <a href="/dashboard/test/${escapeHtml(i.id)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Testuj &rarr;</a>
+        <a href="/dashboard/test/${escapeHtml(i.id)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Zarządzaj &rarr;</a>
       </div>
     </div>
   `).join('');
@@ -556,7 +536,7 @@ function renderTestPanel(calls: cloudtalk.CloudTalkCall[], currentPage: number, 
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Test: CloudTalk Call Notes — Integration Hub</title>
+  <title>CloudTalk Call Notes — Integration Hub</title>
   <link rel="icon" href="data:,">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -592,7 +572,7 @@ function renderTestPanel(calls: cloudtalk.CloudTalkCall[], currentPage: number, 
     <header>
       <div>
         <a href="/dashboard" class="back-link">&larr; Dashboard</a>
-        <h1 style="margin-top:8px">Test: CloudTalk Call Notes</h1>
+        <h1 style="margin-top:8px">CloudTalk Call Notes</h1>
       </div>
     </header>
 
@@ -628,7 +608,8 @@ function renderTestPanel(calls: cloudtalk.CloudTalkCall[], currentPage: number, 
 function renderSlackLeadPanel(
   akademiaEntries: LeadEntry[],
   raportEntries: LeadEntry[],
-  webhooks: attio.AttioWebhook[],
+  slackStatus: { ok: boolean; team?: string; error?: string },
+  webhook: attio.AttioWebhook | null,
   resultParam?: string,
   loadError?: string,
 ): string {
@@ -666,25 +647,43 @@ function renderSlackLeadPanel(
     }).join('');
   }
 
-  const webhookRows = webhooks.length > 0
-    ? webhooks.map(w => `
-        <div class="webhook-row">
-          <span class="webhook-status webhook-status-${w.status}">${w.status}</span>
-          <code>${escapeHtml(w.id.webhook_id.slice(0, 8))}...</code>
-          <span style="color:#8b949e;font-size:12px">${w.subscriptions.map(s => s.event_type).join(', ')}</span>
-          <form method="POST" action="/dashboard/test/slack-lead-notifications/delete-webhook" style="display:inline;margin-left:8px">
-            <input type="hidden" name="webhook_id" value="${escapeHtml(w.id.webhook_id)}">
-            <button type="submit" class="btn-delete">Usuń</button>
-          </form>
-        </div>`).join('')
-    : '<div style="color:#484f58;font-size:13px;padding:8px 0">Brak zarejestrowanych webhooków</div>';
+  // Slack connection status
+  const slackDot = slackStatus.ok ? 'status-dot-ok' : 'status-dot-error';
+  const slackLabel = slackStatus.ok
+    ? `Połączono (${escapeHtml(slackStatus.team ?? '?')})`
+    : `Brak połączenia (${escapeHtml(slackStatus.error ?? '?')})`;
+
+  // Webhook status
+  let webhookDot: string;
+  let webhookLabel: string;
+  let webhookAction: string;
+
+  if (!webhook) {
+    webhookDot = 'status-dot-none';
+    webhookLabel = 'Niezarejestrowany';
+    webhookAction = `<form method="POST" action="/dashboard/test/slack-lead-notifications/reset-webhook" style="display:inline">
+      <button type="submit" class="btn-action">Zarejestruj</button>
+    </form>`;
+  } else if (webhook.status === 'active') {
+    webhookDot = 'status-dot-ok';
+    webhookLabel = `Aktywny <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
+    webhookAction = `<form method="POST" action="/dashboard/test/slack-lead-notifications/reset-webhook" style="display:inline">
+      <button type="submit" class="btn-action-subtle">Zarejestruj ponownie</button>
+    </form>`;
+  } else {
+    webhookDot = webhook.status === 'degraded' ? 'status-dot-warn' : 'status-dot-error';
+    webhookLabel = `${webhook.status.charAt(0).toUpperCase() + webhook.status.slice(1)} <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
+    webhookAction = `<form method="POST" action="/dashboard/test/slack-lead-notifications/reset-webhook" style="display:inline">
+      <button type="submit" class="btn-action">Usuń i zarejestruj ponownie</button>
+    </form>`;
+  }
 
   return `<!DOCTYPE html>
 <html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Test: Slack Lead Notifications — Integration Hub</title>
+  <title>Slack Lead Notifications — Integration Hub</title>
   <link rel="icon" href="data:,">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -692,18 +691,27 @@ function renderSlackLeadPanel(
     .container { max-width: 1000px; margin: 0 auto; }
     header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
     h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; }
-    h2 { font-size: 16px; font-weight: 600; color: #f0f6fc; margin: 24px 0 12px; }
     .back-link { color: #58a6ff; text-decoration: none; font-size: 14px; }
     .back-link:hover { text-decoration: underline; }
     .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; word-break: break-all; }
     .flash-ok { background: #23863633; border: 1px solid #238636; color: #3fb950; }
     .flash-error { background: #da363433; border: 1px solid #da3634; color: #f85149; }
-    .tools { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }
-    .btn-tool { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
-    .btn-tool:hover { border-color: #58a6ff; color: #58a6ff; }
     .section-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
     .section-title { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
     .channel-tag { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: #58a6ff20; color: #58a6ff; border: 1px solid #58a6ff40; }
+    .conn-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13px; border-bottom: 1px solid #21262d; }
+    .conn-row:last-child { border-bottom: none; }
+    .conn-label { min-width: 70px; color: #8b949e; font-weight: 500; }
+    .conn-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .status-dot-ok { background: #3fb950; box-shadow: 0 0 4px #3fb95066; }
+    .status-dot-warn { background: #d29922; box-shadow: 0 0 4px #d2992266; }
+    .status-dot-error { background: #f85149; box-shadow: 0 0 4px #f8514966; }
+    .status-dot-none { background: #484f58; }
+    .conn-status { flex: 1; }
+    .btn-action { background: #238636; color: #fff; border: none; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .btn-action:hover { background: #2ea043; }
+    .btn-action-subtle { background: none; color: #8b949e; border: 1px solid #30363d; padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .btn-action-subtle:hover { border-color: #8b949e; color: #c9d1d9; }
     table { width: 100%; border-collapse: collapse; }
     th { text-align: left; padding: 8px 10px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; border-bottom: 1px solid #21262d; }
     td { padding: 8px 10px; border-top: 1px solid #21262d; font-size: 13px; }
@@ -711,13 +719,6 @@ function renderSlackLeadPanel(
     code { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #79c0ff; background: #0d1117; padding: 2px 6px; border-radius: 4px; }
     .btn-process { background: #1f6feb; color: #fff; border: none; padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
     .btn-process:hover { background: #388bfd; }
-    .btn-delete { background: none; color: #f85149; border: 1px solid #da363466; padding: 3px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; }
-    .btn-delete:hover { border-color: #f85149; background: #da363420; }
-    .webhook-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; }
-    .webhook-status { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 500; }
-    .webhook-status-active { background: #3fb95020; color: #3fb950; }
-    .webhook-status-degraded { background: #d2992220; color: #d29922; }
-    .webhook-status-inactive { background: #484f5820; color: #484f58; }
     footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
     @media (max-width: 700px) {
       table { font-size: 12px; }
@@ -730,24 +731,25 @@ function renderSlackLeadPanel(
     <header>
       <div>
         <a href="/dashboard" class="back-link">&larr; Dashboard</a>
-        <h1 style="margin-top:8px">Test: Slack Lead Notifications</h1>
+        <h1 style="margin-top:8px">Slack Lead Notifications</h1>
       </div>
     </header>
 
     ${flashHtml}
 
-    <div class="tools">
-      <form method="POST" action="/dashboard/test/slack-lead-notifications/test-slack" style="display:inline">
-        <button type="submit" class="btn-tool">Testuj Slack</button>
-      </form>
-      <form method="POST" action="/dashboard/test/slack-lead-notifications/register-webhooks" style="display:inline">
-        <button type="submit" class="btn-tool">Zarejestruj webhooks w Attio</button>
-      </form>
-    </div>
-
     <div class="section-card">
-      <div class="section-title">Webhooks Attio</div>
-      ${webhookRows}
+      <div class="section-title">Połączenia</div>
+      <div class="conn-row">
+        <span class="conn-label">Slack</span>
+        <span class="conn-dot ${slackDot}"></span>
+        <span class="conn-status">${slackLabel}</span>
+      </div>
+      <div class="conn-row">
+        <span class="conn-label">Webhook</span>
+        <span class="conn-dot ${webhookDot}"></span>
+        <span class="conn-status">${webhookLabel}</span>
+        ${webhookAction}
+      </div>
     </div>
 
     <div class="section-card">
