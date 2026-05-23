@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## CRITICAL: Git Workflow
+
+**DO NOT create feature branches.** Multiple agents work on this codebase simultaneously — feature branches cause conflicts and confusion. All work happens on `dev`. When ready, merge `dev` → `main` and push both. The VPS auto-deploys from `main` via `deploy/autodeploy.sh` (polls every 30s). Never push directly to `main` without merging from `dev` first.
+
 ## Project
 
 Custom Integration Hub — coded automations deployed on a VPS, replacing n8n. Each integration is a module under `src/integrations/`. All integrations are registered in `integrations.json`.
