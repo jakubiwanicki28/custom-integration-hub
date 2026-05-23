@@ -1,0 +1,102 @@
+import type { Router } from 'express';
+import type { Logger } from 'pino';
+
+// --- API Client interfaces ---
+
+export interface AttioClient {
+  findPersonByPhone(phone: string): Promise<import('./attio.js').AttioPerson | null>;
+  findPersonByEmail(email: string): Promise<import('./attio.js').AttioPerson | null>;
+  getDealDetails(dealRecordId: string): Promise<import('./attio.js').AttioDeal | null>;
+  getPersonDetails(recordId: string): Promise<import('./attio.js').AttioPerson | null>;
+  pickBestDeal(person: import('./attio.js').AttioPerson): Promise<import('./attio.js').AttioDeal | null>;
+  createNote(params: { parentObject: 'people' | 'deals' | 'companies'; parentRecordId: string; title: string; content: string }): Promise<string | null>;
+  queryListEntries(listId: string, limit?: number): Promise<import('./attio.js').AttioListEntry[]>;
+  registerWebhook(targetUrl: string, subscriptions: Array<{ event_type: string; filter?: unknown }>): Promise<{ webhookId: string; secret: string } | null>;
+  listWebhooks(): Promise<import('./attio.js').AttioWebhook[]>;
+  deleteWebhook(webhookId: string): Promise<boolean>;
+}
+
+export interface SlackClient {
+  postMessage(channelId: string, blocks: import('./slack.js').SlackBlock[], fallbackText: string): Promise<boolean>;
+  testConnection(): Promise<{ ok: boolean; team?: string; error?: string }>;
+}
+
+export interface CloudTalkClient {
+  getCallDetails(callId: string): Promise<import('./cloudtalk.js').CloudTalkCall | null>;
+  getRecentCalls(limit?: number, page?: number): Promise<import('./cloudtalk.js').CallsPage>;
+  getCallsSince(since: Date, limit?: number): Promise<import('./cloudtalk.js').CloudTalkCall[]>;
+  downloadRecording(callId: string): Promise<Buffer | null>;
+}
+
+// --- Organization context ---
+
+export interface OrgContext {
+  org: {
+    id: string;
+    name: string;
+    attioWorkspaceSlug: string;
+    webhookSecret: string;
+  };
+  clients: {
+    attio: AttioClient;
+    slack?: SlackClient;
+    cloudtalk?: CloudTalkClient;
+  };
+  integrationConfig: Record<string, unknown>;
+  log: Logger;
+}
+
+// --- Integration instance (returned by createIntegration) ---
+
+export interface IntegrationInstance {
+  router: Router;
+  handlers: {
+    processManual?: (...args: string[]) => Promise<unknown>;
+    [key: string]: unknown;
+  };
+  startPoller?: () => void;
+  config?: Record<string, unknown>;
+}
+
+// --- Organization credentials ---
+
+export interface OrgCredentials {
+  attio: { apiKey: string; webhookSecret: string };
+  slack: { botToken: string };
+  cloudtalk?: { apiId: string; apiKey: string };
+}
+
+// --- Registry types ---
+
+export interface IntegrationCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  type: 'webhook' | 'cron' | 'hybrid';
+  module: string;
+  requiredServices: string[];
+  triggers: string[];
+  targets: string[];
+}
+
+export interface OrganizationEntry {
+  id: string;
+  name: string;
+  envPrefix: string;
+  attioWorkspaceSlug: string;
+  integrations: OrgIntegrationEntry[];
+}
+
+export interface OrgIntegrationEntry {
+  integrationId: string;
+  status: 'active' | 'inactive' | 'development';
+  config?: Record<string, unknown>;
+}
+
+// --- Channel mapping (shared by slack-lead-notifications) ---
+
+export interface ChannelMapping {
+  listName: string;
+  channelId: string;
+  channelName: string;
+}

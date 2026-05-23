@@ -1,0 +1,55 @@
+{
+  "organizations": [
+    {
+      "id": "ww-partners",
+      "name": "WW Partners",
+      "envPrefix": "WW",
+      "attioWorkspaceSlug": "ww-partners",
+      "integrations": [
+        {
+          "integrationId": "cloudtalk-call-notes",
+          "status": "active"
+        },
+        {
+          "integrationId": "slack-lead-notifications",
+          "status": "active",
+          "config": {
+            "listChannelMap": {
+              "a87fbbdf-8cab-4630-a3cc-9f5756dc944a": {
+                "listName": "Akademia Biznesu",
+                "channelId": "C0B4Z6TMFGC",
+                "channelName": "#nowe-leady-akademia"
+              },
+              "2e7cb019-4c0e-45c9-8998-c58590a733ef": {
+                "listName": "Raport Strategiczny",
+                "channelId": "C0B4TG9S4K0",
+                "channelName": "#nowe-leady-raport"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "velocy",
+      "name": "Velocy.co",
+      "envPrefix": "VELOCY",
+      "attioWorkspaceSlug": "velocy-co",
+      "integrations": [
+        {
+          "integrationId": "slack-lead-notifications",
+          "status": "development",
+          "config": {
+            "listChannelMap": {
+              "176d7c55-cc11-413a-9b33-a82cee5f0f2d": {
+                "listName": "Velocy Leads",
+                "channelId": "C0B54QSG6JD",
+                "channelName": "#velocy-leads"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

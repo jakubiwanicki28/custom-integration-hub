@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { webhookHandler } from './handler.js';
+import type { Request, Response } from 'express';
 
-const router = Router();
-
-router.post('/webhook', webhookHandler);
-
-export { router };
+export function createRouter(handler: { webhookHandler: (req: Request, res: Response) => Promise<void> }): Router {
+  const router = Router();
+  router.post('/webhook', handler.webhookHandler);
+  return router;
+}

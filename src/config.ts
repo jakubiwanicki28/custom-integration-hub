@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { createHmac } from 'crypto';
+import type { OrgCredentials } from './lib/org-context.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -9,36 +10,16 @@ function requireEnv(name: string): string {
   return value;
 }
 
+// Shared config — not per-org
 export const config = {
   port: Number(process.env.PORT) || 3100,
   nodeEnv: process.env.NODE_ENV || 'development',
   isDev: (process.env.NODE_ENV || 'development') === 'development',
 
-  attio: {
-    apiKey: requireEnv('ATTIO_API_KEY'),
-    baseUrl: 'https://api.attio.com/v2',
-    webhookSecret: process.env.ATTIO_WEBHOOK_SECRET || '',
-  },
-
-  slack: {
-    botToken: process.env.SLACK_BOT_TOKEN || '',
-  },
-
-  cloudtalk: {
-    apiId: requireEnv('CLOUDTALK_API_ID'),
-    apiKey: requireEnv('CLOUDTALK_API_KEY'),
-    baseUrl: 'https://my.cloudtalk.io/api',
-    analyticsBaseUrl: 'https://analytics-api.cloudtalk.io/api',
-  },
-
   openrouter: {
     apiKey: requireEnv('OPENROUTER_API_KEY'),
     baseUrl: 'https://openrouter.ai/api/v1',
     model: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash-lite',
-  },
-
-  webhook: {
-    secret: process.env.WEBHOOK_SECRET || '',
   },
 
   dashboard: {
@@ -49,3 +30,24 @@ export const config = {
         : ''),
   },
 } as const;
+
+// Per-org credentials — loaded on demand via env prefix
+export function loadOrgCredentials(envPrefix: string, requiredServices: string[]): OrgCredentials {
+  const needsAttio = requiredServices.includes('attio');
+  const needsSlack = requiredServices.includes('slack');
+  const needsCloudtalk = requiredServices.includes('cloudtalk');
+
+  return {
+    attio: {
+      apiKey: needsAttio ? requireEnv(`${envPrefix}_ATTIO_API_KEY`) : (process.env[`${envPrefix}_ATTIO_API_KEY`] || ''),
+      webhookSecret: process.env[`${envPrefix}_ATTIO_WEBHOOK_SECRET`] || '',
+    },
+    slack: {
+      botToken: needsSlack ? (process.env[`${envPrefix}_SLACK_BOT_TOKEN`] || '') : '',
+    },
+    cloudtalk: needsCloudtalk ? {
+      apiId: requireEnv(`${envPrefix}_CLOUDTALK_API_ID`),
+      apiKey: requireEnv(`${envPrefix}_CLOUDTALK_API_KEY`),
+    } : undefined,
+  };
+}

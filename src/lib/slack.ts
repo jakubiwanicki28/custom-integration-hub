@@ -1,13 +1,6 @@
-import { config } from '../config.js';
-import { logger } from './logger.js';
+import type { Logger } from 'pino';
 import { fetchWithTimeout, safeJson } from './fetch.js';
-
-const log = logger.child({ lib: 'slack' });
-
-const headers = {
-  Authorization: `Bearer ${config.slack.botToken}`,
-  'Content-Type': 'application/json',
-};
+import type { SlackClient } from './org-context.js';
 
 // --- Types ---
 
@@ -47,57 +40,59 @@ interface SlackAuthTestResponse {
   error?: string;
 }
 
-// --- API Functions ---
+// --- Factory: creates a Slack API client bound to a specific bot token ---
 
-export async function postMessage(
-  channelId: string,
-  blocks: SlackBlock[],
-  fallbackText: string,
-): Promise<boolean> {
-  const body = {
-    channel: channelId,
-    blocks,
-    text: fallbackText,
+export function createSlackClient(botToken: string, log: Logger): SlackClient {
+  const headers = {
+    Authorization: `Bearer ${botToken}`,
+    'Content-Type': 'application/json',
   };
 
-  const res = await fetchWithTimeout('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  async function postMessage(
+    channelId: string,
+    blocks: SlackBlock[],
+    fallbackText: string,
+  ): Promise<boolean> {
+    const body = { channel: channelId, blocks, text: fallbackText };
 
-  if (!res.ok) {
-    log.error({ status: res.status, channelId }, 'Slack API HTTP error');
-    return false;
+    const res = await fetchWithTimeout('https://slack.com/api/chat.postMessage', {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      log.error({ status: res.status, channelId }, 'Slack API HTTP error');
+      return false;
+    }
+
+    const data = await safeJson<SlackPostMessageResponse>(res);
+
+    if (!data.ok) {
+      log.error({ channelId, error: data.error }, 'Slack postMessage failed');
+      return false;
+    }
+
+    log.info({ channelId, ts: data.ts }, 'Slack message sent');
+    return true;
   }
 
-  const data = await safeJson<SlackPostMessageResponse>(res);
+  async function testConnection(): Promise<{ ok: boolean; team?: string; error?: string }> {
+    const res = await fetchWithTimeout('https://slack.com/api/auth.test', {
+      method: 'POST', headers,
+    });
 
-  if (!data.ok) {
-    log.error({ channelId, error: data.error }, 'Slack postMessage failed');
-    return false;
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}` };
+    }
+
+    const data = await safeJson<SlackAuthTestResponse>(res);
+
+    if (!data.ok) {
+      return { ok: false, error: data.error };
+    }
+
+    log.info({ team: data.team, user: data.user }, 'Slack connection verified');
+    return { ok: true, team: data.team };
   }
 
-  log.info({ channelId, ts: data.ts }, 'Slack message sent');
-  return true;
-}
-
-export async function testConnection(): Promise<{ ok: boolean; team?: string; error?: string }> {
-  const res = await fetchWithTimeout('https://slack.com/api/auth.test', {
-    method: 'POST',
-    headers,
-  });
-
-  if (!res.ok) {
-    return { ok: false, error: `HTTP ${res.status}` };
-  }
-
-  const data = await safeJson<SlackAuthTestResponse>(res);
-
-  if (!data.ok) {
-    return { ok: false, error: data.error };
-  }
-
-  log.info({ team: data.team, user: data.user }, 'Slack connection verified');
-  return { ok: true, team: data.team };
+  return { postMessage, testConnection };
 }

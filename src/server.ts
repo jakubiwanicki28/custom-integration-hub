@@ -1,84 +1,169 @@
 import express from 'express';
-import { resolve } from 'path';
-import { config } from './config.js';
+import { config, loadOrgCredentials } from './config.js';
 import { logger } from './lib/logger.js';
-import { loadRegistry, getActiveIntegrations, getAllIntegrations, importIntegration } from './lib/registry.js';
+import {
+  loadIntegrationCatalog, loadOrganizations, getAllOrganizations,
+  getCatalogEntry, importIntegrationModule, registerMountedIntegration,
+  getAllMountedIntegrations,
+} from './lib/registry.js';
+import { createAttioClient } from './lib/attio.js';
+import { createSlackClient } from './lib/slack.js';
+import { createCloudTalkClient } from './lib/cloudtalk.js';
 import { dashboardRouter } from './dashboard.js';
+import type { OrgContext } from './lib/org-context.js';
 
 const app = express();
-app.set('trust proxy', 1); // Trust only the first proxy (nginx)
+app.set('trust proxy', 1);
 
 app.use(express.json({
   limit: '2mb',
   verify: (_req, _res, buf) => {
-    // Store raw body for webhook signature verification
     (_req as express.Request & { rawBody?: Buffer }).rawBody = buf;
   },
 }));
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging
 app.use((req, _res, next) => {
   logger.info({ method: req.method, path: req.path }, 'request');
   next();
 });
 
-// Health endpoint — shows active integrations
+// Health endpoint — shows all orgs and their integrations
 app.get('/health', (_req, res) => {
-  const all = getAllIntegrations();
+  const mounted = getAllMountedIntegrations();
+  const orgs = getAllOrganizations();
+
   res.json({
     status: 'ok',
     uptime: Math.round(process.uptime()),
-    integrations: all.map(i => ({
-      id: i.id,
-      name: i.name,
-      status: i.status,
-      type: i.type,
-      path: i.path,
+    organizations: orgs.map(org => ({
+      id: org.id,
+      name: org.name,
+      integrations: mounted
+        .filter(m => m.orgId === org.id)
+        .map(m => ({
+          id: m.integrationId,
+          name: m.catalogEntry.name,
+          status: m.status,
+          type: m.catalogEntry.type,
+          path: `/${org.id}${getIntegrationPath(m.integrationId)}`,
+        })),
     })),
   });
 });
 
-// Load registry and mount active integrations
-async function bootstrap() {
-  loadRegistry();
+function getIntegrationPath(integrationId: string): string {
+  return `/${integrationId}`;
+}
 
-  // Dashboard (must be mounted after registry is loaded)
+async function bootstrap() {
+  // Load both config files
+  const catalog = loadIntegrationCatalog();
+  const organizations = loadOrganizations();
+
+  // Dashboard
   app.use('/dashboard', dashboardRouter);
   if (config.dashboard.password) {
     app.get('/', (_req, res) => res.redirect('/dashboard'));
   }
 
-  const active = getActiveIntegrations();
+  let totalMounted = 0;
 
-  for (const entry of active) {
-    try {
-      const mod = await importIntegration(entry);
-      app.use(entry.path, mod.router);
-      logger.info({ id: entry.id, path: entry.path }, 'Integration mounted');
-    } catch (err) {
-      logger.error({ id: entry.id, err }, 'Failed to load integration');
-    }
-  }
+  for (const org of organizations) {
+    const orgLog = logger.child({ org: org.id });
 
-  if (active.length === 0) {
-    logger.warn('No active integrations found in registry');
-  }
-
-  // Start pollers for hybrid/cron integrations (dynamic import — no static coupling)
-  for (const entry of active) {
-    if (entry.type === 'hybrid' || entry.type === 'cron') {
-      try {
-        const modulePath = resolve(process.cwd(), entry.module);
-        const mod = await import(modulePath);
-        if (typeof mod.startPoller === 'function') {
-          mod.startPoller();
-          logger.info({ id: entry.id }, 'Poller started');
-        }
-      } catch (err) {
-        logger.error({ err, id: entry.id }, 'Failed to start poller');
+    // Determine which services this org needs (union of all active integrations' requirements)
+    const activeIntegrations = org.integrations.filter(i => i.status === 'active');
+    const requiredServices = new Set<string>();
+    for (const orgInt of activeIntegrations) {
+      const catalogEntry = getCatalogEntry(orgInt.integrationId);
+      if (catalogEntry) {
+        for (const svc of catalogEntry.requiredServices) requiredServices.add(svc);
       }
     }
+
+    // Load org credentials
+    let credentials;
+    try {
+      credentials = loadOrgCredentials(org.envPrefix, Array.from(requiredServices));
+    } catch (err) {
+      orgLog.error({ err }, 'Failed to load org credentials — skipping org');
+      continue;
+    }
+
+    // Create API clients for this org
+    const attioClient = createAttioClient(credentials.attio.apiKey, orgLog.child({ lib: 'attio' }));
+    const slackClient = credentials.slack.botToken
+      ? createSlackClient(credentials.slack.botToken, orgLog.child({ lib: 'slack' }))
+      : undefined;
+    const cloudtalkClient = credentials.cloudtalk
+      ? createCloudTalkClient(credentials.cloudtalk.apiId, credentials.cloudtalk.apiKey, orgLog.child({ lib: 'cloudtalk' }))
+      : undefined;
+
+    // Mount each active integration for this org
+    for (const orgInt of activeIntegrations) {
+      const catalogEntry = getCatalogEntry(orgInt.integrationId);
+      if (!catalogEntry) {
+        orgLog.warn({ integrationId: orgInt.integrationId }, 'Integration not found in catalog');
+        continue;
+      }
+
+      // Check required services are available
+      const missingServices = catalogEntry.requiredServices.filter(svc => {
+        if (svc === 'attio') return !credentials.attio.apiKey;
+        if (svc === 'slack') return !slackClient;
+        if (svc === 'cloudtalk') return !cloudtalkClient;
+        if (svc === 'openrouter') return false; // shared, always available
+        return false;
+      });
+
+      if (missingServices.length > 0) {
+        orgLog.warn({ integrationId: orgInt.integrationId, missingServices }, 'Missing required services — skipping');
+        continue;
+      }
+
+      const ctx: OrgContext = {
+        org: {
+          id: org.id,
+          name: org.name,
+          attioWorkspaceSlug: org.attioWorkspaceSlug,
+          webhookSecret: credentials.attio.webhookSecret,
+        },
+        clients: {
+          attio: attioClient,
+          slack: slackClient,
+          cloudtalk: cloudtalkClient,
+        },
+        integrationConfig: orgInt.config ?? {},
+        log: orgLog,
+      };
+
+      try {
+        const mod = await importIntegrationModule(catalogEntry);
+        const instance = mod.createIntegration(ctx);
+
+        const mountPath = `/${org.id}/${catalogEntry.id}`;
+        app.use(mountPath, instance.router);
+        registerMountedIntegration(org.id, catalogEntry.id, instance, catalogEntry, ctx, orgInt.status);
+
+        orgLog.info({ integrationId: catalogEntry.id, path: mountPath }, 'Integration mounted');
+        totalMounted++;
+
+        // Start poller if integration has one
+        if (instance.startPoller && (catalogEntry.type === 'hybrid' || catalogEntry.type === 'cron')) {
+          instance.startPoller();
+          orgLog.info({ integrationId: catalogEntry.id }, 'Poller started');
+        }
+      } catch (err) {
+        orgLog.error({ integrationId: catalogEntry.id, err }, 'Failed to mount integration');
+      }
+    }
+  }
+
+  if (totalMounted === 0) {
+    logger.warn('No active integrations mounted for any organization');
+  } else {
+    logger.info({ totalMounted }, 'All integrations mounted');
   }
 
   // Global error handler
@@ -88,10 +173,9 @@ async function bootstrap() {
   });
 
   const server = app.listen(config.port, () => {
-    logger.info({ port: config.port, env: config.nodeEnv, activeIntegrations: active.length }, 'Custom Integration Hub started');
+    logger.info({ port: config.port, env: config.nodeEnv, totalMounted }, 'Custom Integration Hub started');
   });
 
-  // Graceful shutdown — shared by SIGTERM and SIGINT
   let shuttingDown = false;
   function shutdown(signal: string) {
     if (shuttingDown) return;
@@ -111,7 +195,6 @@ async function bootstrap() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-// Global safety nets — must be registered before bootstrap
 process.on('unhandledRejection', (reason) => {
   logger.error({ err: reason }, 'Unhandled promise rejection');
 });

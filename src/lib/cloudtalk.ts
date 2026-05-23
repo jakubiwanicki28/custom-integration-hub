@@ -1,16 +1,8 @@
-import { config } from '../config.js';
-import { logger } from './logger.js';
+import type { Logger } from 'pino';
 import { fetchWithTimeout, safeJson } from './fetch.js';
+import type { CloudTalkClient } from './org-context.js';
 
-const log = logger.child({ lib: 'cloudtalk' });
-
-const basicAuth = Buffer.from(
-  `${config.cloudtalk.apiId}:${config.cloudtalk.apiKey}`
-).toString('base64');
-
-const headers = {
-  Authorization: `Basic ${basicAuth}`,
-};
+// --- Types ---
 
 export interface CloudTalkCall {
   id: string;
@@ -62,6 +54,13 @@ interface CdrResponse {
   };
 }
 
+export interface CallsPage {
+  calls: CloudTalkCall[];
+  totalPages: number;
+  currentPage: number;
+  totalItems: number;
+}
+
 function parseCall(entry: CdrResponse['responseData']['data'][0]): CloudTalkCall {
   const { Cdr, Agent, Contact } = entry;
   return {
@@ -84,96 +83,98 @@ function parseCall(entry: CdrResponse['responseData']['data'][0]): CloudTalkCall
   };
 }
 
-export async function getCallDetails(callId: string): Promise<CloudTalkCall | null> {
-  // CloudTalk CDR list doesn't support filtering by ID — fetch batch and find
-  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=100`;
-  const res = await fetchWithTimeout(url, { headers });
+const BASE_URL = 'https://my.cloudtalk.io/api';
 
-  if (!res.ok) {
-    log.error({ callId, status: res.status }, 'Failed to fetch call details');
-    return null;
+// --- Factory: creates a CloudTalk API client bound to specific credentials ---
+
+export function createCloudTalkClient(apiId: string, apiKey: string, log: Logger): CloudTalkClient {
+  const basicAuth = Buffer.from(`${apiId}:${apiKey}`).toString('base64');
+  const headers = { Authorization: `Basic ${basicAuth}` };
+
+  async function getCallDetails(callId: string): Promise<CloudTalkCall | null> {
+    const url = `${BASE_URL}/calls/index.json?limit=100`;
+    const res = await fetchWithTimeout(url, { headers });
+
+    if (!res.ok) {
+      log.error({ callId, status: res.status }, 'Failed to fetch call details');
+      return null;
+    }
+
+    const data = await safeJson<CdrResponse>(res);
+    const entries = data.responseData?.data ?? [];
+
+    log.info({ callId, totalEntries: entries.length, firstId: entries[0]?.Cdr.id, lastId: entries[entries.length - 1]?.Cdr.id }, 'Searching for call in batch');
+
+    const match = entries.find(e => e.Cdr.id === callId);
+
+    if (!match) {
+      log.warn({ callId, sampleIds: entries.slice(0, 5).map(e => e.Cdr.id) }, 'Call not found in recent calls');
+      return null;
+    }
+
+    log.info({ callId, duration: match.Cdr.billsec }, 'Call matched');
+    return parseCall(match);
   }
 
-  const data = await safeJson<CdrResponse>(res);
-  const entries = data.responseData?.data ?? [];
+  async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
+    const url = `${BASE_URL}/calls/index.json?limit=${limit}&page=${page}`;
+    const res = await fetchWithTimeout(url, { headers });
 
-  log.info({ callId, totalEntries: entries.length, firstId: entries[0]?.Cdr.id, lastId: entries[entries.length - 1]?.Cdr.id }, 'Searching for call in batch');
+    if (!res.ok) {
+      log.error({ status: res.status }, 'Failed to fetch recent calls');
+      return { calls: [], totalPages: 0, currentPage: page, totalItems: 0 };
+    }
 
-  const match = entries.find(e => e.Cdr.id === callId);
-
-  if (!match) {
-    log.warn({ callId, sampleIds: entries.slice(0, 5).map(e => e.Cdr.id) }, 'Call not found in recent calls');
-    return null;
+    const data = await safeJson<CdrResponse>(res);
+    return {
+      calls: (data.responseData?.data ?? []).map(parseCall),
+      totalPages: data.responseData?.pageCount ?? 0,
+      currentPage: data.responseData?.pageNumber ?? page,
+      totalItems: data.responseData?.itemsCount ?? 0,
+    };
   }
 
-  log.info({ callId, duration: match.Cdr.billsec }, 'Call matched');
-  return parseCall(match);
-}
+  async function getCallsSince(since: Date, limit = 20): Promise<CloudTalkCall[]> {
+    const dateFrom = since.toISOString();
+    const url = `${BASE_URL}/calls/index.json?limit=${limit}&date_from=${dateFrom}`;
+    const res = await fetchWithTimeout(url, { headers });
 
-export interface CallsPage {
-  calls: CloudTalkCall[];
-  totalPages: number;
-  currentPage: number;
-  totalItems: number;
-}
+    if (!res.ok) {
+      log.error({ status: res.status, dateFrom }, 'Failed to fetch calls since date');
+      return [];
+    }
 
-export async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
-  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}&page=${page}`;
-  const res = await fetchWithTimeout(url, { headers });
-
-  if (!res.ok) {
-    log.error({ status: res.status }, 'Failed to fetch recent calls');
-    return { calls: [], totalPages: 0, currentPage: page, totalItems: 0 };
+    const data = await safeJson<CdrResponse>(res);
+    return (data.responseData?.data ?? []).map(parseCall);
   }
 
-  const data = await safeJson<CdrResponse>(res);
-  return {
-    calls: (data.responseData?.data ?? []).map(parseCall),
-    totalPages: data.responseData?.pageCount ?? 0,
-    currentPage: data.responseData?.pageNumber ?? page,
-    totalItems: data.responseData?.itemsCount ?? 0,
-  };
-}
+  async function downloadRecording(callId: string): Promise<Buffer | null> {
+    const url = `${BASE_URL}/calls/recording/${callId}.json`;
+    const res = await fetchWithTimeout(url, { headers });
 
-export async function getCallsSince(since: Date, limit = 20): Promise<CloudTalkCall[]> {
-  const dateFrom = since.toISOString();
-  const url = `${config.cloudtalk.baseUrl}/calls/index.json?limit=${limit}&date_from=${dateFrom}`;
-  const res = await fetchWithTimeout(url, { headers });
+    if (!res.ok) {
+      log.warn({ callId, status: res.status }, 'Recording not available');
+      return null;
+    }
 
-  if (!res.ok) {
-    log.error({ status: res.status, dateFrom }, 'Failed to fetch calls since date');
-    return [];
+    const contentType = res.headers.get('content-type') ?? '';
+    if (contentType.includes('json')) {
+      const body = await safeJson(res);
+      log.warn({ callId, body }, 'Recording endpoint returned JSON instead of audio');
+      return null;
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    if (buffer.length < 1000) {
+      log.warn({ callId, size: buffer.length }, 'Recording too small, likely empty');
+      return null;
+    }
+
+    log.info({ callId, sizeKB: Math.round(buffer.length / 1024) }, 'Recording downloaded');
+    return buffer;
   }
 
-  const data = await safeJson<CdrResponse>(res);
-  return (data.responseData?.data ?? []).map(parseCall);
-}
-
-export async function downloadRecording(callId: string): Promise<Buffer | null> {
-  const url = `${config.cloudtalk.baseUrl}/calls/recording/${callId}.json`;
-  const res = await fetchWithTimeout(url, { headers });
-
-  if (!res.ok) {
-    log.warn({ callId, status: res.status }, 'Recording not available');
-    return null;
-  }
-
-  const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('json')) {
-    // Some responses return JSON with error info
-    const body = await safeJson(res);
-    log.warn({ callId, body }, 'Recording endpoint returned JSON instead of audio');
-    return null;
-  }
-
-  const arrayBuffer = await res.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-
-  if (buffer.length < 1000) {
-    log.warn({ callId, size: buffer.length }, 'Recording too small, likely empty');
-    return null;
-  }
-
-  log.info({ callId, sizeKB: Math.round(buffer.length / 1024) }, 'Recording downloaded');
-  return buffer;
+  return { getCallDetails, getRecentCalls, getCallsSince, downloadRecording };
 }

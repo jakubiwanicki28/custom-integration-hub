@@ -4,25 +4,21 @@
       "id": "cloudtalk-call-notes",
       "name": "CloudTalk → Notatki z rozmów",
       "description": "Transkrybuje i streszcza rozmowy z CloudTalk, tworzy notatki w Attio CRM (Person + Deal)",
-      "status": "active",
       "type": "hybrid",
-      "path": "/cloudtalk-call-notes",
       "module": "./src/integrations/cloudtalk-call-notes/index.js",
-      "triggers": ["CloudTalk: Call Ended webhook"],
-      "targets": ["Attio: Person note", "Attio: Deal note"],
-      "addedAt": "2026-05-20"
+      "requiredServices": ["attio", "cloudtalk", "openrouter"],
+      "triggers": ["CloudTalk: Call Ended webhook / poller"],
+      "targets": ["Attio: Person note", "Attio: Deal note"]
     },
     {
       "id": "slack-lead-notifications",
       "name": "Attio → Slack: Nowe leady",
       "description": "Powiadamia na Slacku o nowych leadach w listach kampanii Attio CRM",
-      "status": "active",
       "type": "webhook",
-      "path": "/slack-lead-notifications",
       "module": "./src/integrations/slack-lead-notifications/index.js",
+      "requiredServices": ["attio", "slack"],
       "triggers": ["Attio: list-entry.created webhook"],
-      "targets": ["Slack: #nowe-leady-akademia", "Slack: #nowe-leady-raport"],
-      "addedAt": "2026-05-21"
+      "targets": ["Slack: notification"]
     }
   ]
 }

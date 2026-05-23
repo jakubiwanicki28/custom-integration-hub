@@ -1,12 +1,14 @@
 import { Router, type Request, type Response } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { config } from './config.js';
-import { getAllIntegrations, type IntegrationEntry } from './lib/registry.js';
-import * as cloudtalk from './lib/cloudtalk.js';
-import { processCallManual, type ProcessResult } from './integrations/cloudtalk-call-notes/handler.js';
-import * as attio from './lib/attio.js';
-import * as slack from './lib/slack.js';
-import { processLeadManual, LIST_CHANNEL_MAP } from './integrations/slack-lead-notifications/handler.js';
+import {
+  getAllOrganizations, getMountedIntegration, getMountedIntegrationsForOrg,
+  getAllMountedIntegrations, type MountedIntegration,
+} from './lib/registry.js';
+import { getPersonName, getDealName, getDealStage, getPersonEmail, getPersonPhone } from './lib/attio.js';
+import type { AttioWebhook, AttioListEntry } from './lib/attio.js';
+import type { CloudTalkCall } from './lib/cloudtalk.js';
+import type { ChannelMapping } from './lib/org-context.js';
 import { createLogger } from './lib/logger.js';
 
 const log = createLogger('dashboard');
@@ -33,19 +35,16 @@ cleanup.unref();
 function isRateLimited(ip: string): boolean {
   const entry = loginAttempts.get(ip);
   if (!entry) return false;
-  if (Date.now() < entry.lockedUntil) return true;
-  return false;
+  return Date.now() < entry.lockedUntil;
 }
 
 function recordAttempt(ip: string): void {
   const now = Date.now();
   const entry = loginAttempts.get(ip);
-
   if (!entry || now - entry.firstAttempt > WINDOW_MS) {
     loginAttempts.set(ip, { count: 1, firstAttempt: now, lockedUntil: 0 });
     return;
   }
-
   entry.count++;
   if (entry.count >= MAX_ATTEMPTS) {
     entry.lockedUntil = now + LOCKOUT_MS;
@@ -59,29 +58,18 @@ function clearAttempts(ip: string): void {
 // --- Cookie Auth ---
 
 function signToken(timestamp: number): string {
-  const hmac = createHmac('sha256', config.dashboard.cookieSecret)
-    .update(String(timestamp))
-    .digest('hex');
-  return `${timestamp}.${hmac}`;
+  return `${timestamp}.${createHmac('sha256', config.dashboard.cookieSecret).update(String(timestamp)).digest('hex')}`;
 }
 
 function verifyToken(token: string): boolean {
   const dot = token.indexOf('.');
   if (dot === -1) return false;
-
   const timestamp = parseInt(token.slice(0, dot), 10);
   const signature = token.slice(dot + 1);
-
   if (isNaN(timestamp)) return false;
-
-  // Check expiry (7 days)
   const age = Date.now() - timestamp;
   if (age > 7 * 24 * 60 * 60 * 1000 || age < 0) return false;
-
-  const expected = createHmac('sha256', config.dashboard.cookieSecret)
-    .update(String(timestamp))
-    .digest('hex');
-
+  const expected = createHmac('sha256', config.dashboard.cookieSecret).update(String(timestamp)).digest('hex');
   if (signature.length !== expected.length) return false;
   return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
 }
@@ -94,8 +82,7 @@ function getSessionCookie(req: Request): string | undefined {
 
 function isAuthenticated(req: Request): boolean {
   const token = getSessionCookie(req);
-  if (!token) return false;
-  return verifyToken(token);
+  return !!token && verifyToken(token);
 }
 
 function checkPassword(input: string): boolean {
@@ -111,49 +98,36 @@ dashboardRouter.get('/', (req: Request, res: Response) => {
     res.status(503).send('Dashboard not configured. Set DASHBOARD_PASSWORD in .env');
     return;
   }
-
-  if (isAuthenticated(req)) {
-    const data = {
-      uptime: process.uptime(),
-      integrations: getAllIntegrations(),
-    };
-    res.send(renderDashboardPage(data));
-  } else {
+  if (!isAuthenticated(req)) {
     res.send(renderLoginPage());
-  }
-});
-
-dashboardRouter.post('/login', (req: Request, res: Response) => {
-  if (!config.dashboard.password) {
-    res.status(503).send('Dashboard not configured');
     return;
   }
 
-  const ip = req.ip || 'unknown';
+  const orgs = getAllOrganizations();
+  const selectedOrgId = (req.query.org as string) || orgs[0]?.id || '';
+  const mounted = getMountedIntegrationsForOrg(selectedOrgId);
 
+  res.send(renderDashboardPage({ uptime: process.uptime(), orgs, selectedOrgId, mounted }));
+});
+
+dashboardRouter.post('/login', (req: Request, res: Response) => {
+  if (!config.dashboard.password) { res.status(503).send('Dashboard not configured'); return; }
+  const ip = req.ip || 'unknown';
   if (isRateLimited(ip)) {
     res.status(429).send(renderLoginPage('Zbyt wiele prób. Spróbuj ponownie za 15 minut.'));
     return;
   }
-
   const password = req.body?.password;
   if (!password || !checkPassword(password)) {
     recordAttempt(ip);
     res.send(renderLoginPage('Nieprawidłowe hasło.'));
     return;
   }
-
   clearAttempts(ip);
-
-  const token = signToken(Date.now());
-  res.cookie('dashboard_session', token, {
-    httpOnly: true,
-    secure: !config.isDev,
-    sameSite: 'strict',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: '/dashboard',
+  res.cookie('dashboard_session', signToken(Date.now()), {
+    httpOnly: true, secure: !config.isDev, sameSite: 'strict',
+    maxAge: 7 * 24 * 60 * 60 * 1000, path: '/dashboard',
   });
-
   res.redirect(303, '/dashboard');
 });
 
@@ -162,50 +136,162 @@ dashboardRouter.post('/logout', (_req: Request, res: Response) => {
   res.redirect(303, '/dashboard');
 });
 
-// --- Test Panel: CloudTalk Call Notes ---
+// --- Dynamic Test Panel Routes ---
 
-dashboardRouter.get('/test/cloudtalk-call-notes', async (req: Request, res: Response) => {
+function param(req: Request, name: string): string {
+  const val = req.params[name];
+  return Array.isArray(val) ? val[0] : val;
+}
+
+// GET /test/:orgId/cloudtalk-call-notes
+dashboardRouter.get('/test/:orgId/cloudtalk-call-notes', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'cloudtalk-call-notes');
+  if (!mounted?.ctx.clients.cloudtalk) {
+    res.redirect('/dashboard?org=' + orgId);
+    return;
+  }
 
   try {
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
     const result = req.query.result as string | undefined;
-    const callsPage = await cloudtalk.getRecentCalls(5, page);
-
-    res.send(renderTestPanel(callsPage.calls, callsPage.currentPage, callsPage.totalPages, result));
+    const callsPage = await mounted.ctx.clients.cloudtalk.getRecentCalls(5, page);
+    res.send(renderTestPanel(orgId, callsPage.calls, callsPage.currentPage, callsPage.totalPages, result));
   } catch (err) {
     log.error({ err, path: req.path }, 'Dashboard route error');
-    res.send(renderTestPanel([], 1, 0, 'error:' + (err instanceof Error ? err.message : 'Błąd połączenia z CloudTalk')));
+    res.send(renderTestPanel(orgId, [], 1, 0, 'error:' + (err instanceof Error ? err.message : 'Błąd połączenia z CloudTalk')));
   }
 });
 
-dashboardRouter.post('/test/cloudtalk-call-notes/process', async (req: Request, res: Response) => {
+// POST /test/:orgId/cloudtalk-call-notes/process
+dashboardRouter.post('/test/:orgId/cloudtalk-call-notes/process', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'cloudtalk-call-notes');
+  const redirectBase = `/dashboard/test/${orgId}/cloudtalk-call-notes`;
 
   try {
     const callId = req.body?.call_id;
-    if (!callId) {
-      res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent('error:Brak call_id'));
-      return;
-    }
+    if (!callId) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Brak call_id')); return; }
+    if (!mounted?.instance.handlers.processManual) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana')); return; }
 
-    const result = await processCallManual(callId);
-
-    let msg: string;
-    if (result.success) {
-      msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? 'brak deala'} | ${result.notesCreated ?? 0} notatek`;
-    } else {
-      msg = `error:${result.error ?? 'Nieznany błąd'}`;
-    }
-
-    res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent(msg));
+    const result = await mounted.instance.handlers.processManual(callId) as { success: boolean; personName?: string; dealName?: string; notesCreated?: number; error?: string };
+    const msg = result.success
+      ? `ok:${result.personName ?? '?'} | ${result.dealName ?? 'brak deala'} | ${result.notesCreated ?? 0} notatek`
+      : `error:${result.error ?? 'Nieznany błąd'}`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
   } catch (err) {
     log.error({ err, path: req.path }, 'Dashboard route error');
-    res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
   }
 });
 
-// --- Test Panel: Slack Lead Notifications ---
+// GET /test/:orgId/slack-lead-notifications
+dashboardRouter.get('/test/:orgId/slack-lead-notifications', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'slack-lead-notifications');
+  if (!mounted) { res.redirect('/dashboard?org=' + orgId); return; }
+
+  const result = req.query.result as string | undefined;
+  const attio = mounted.ctx.clients.attio;
+  const slack = mounted.ctx.clients.slack;
+  const listChannelMap = (mounted.instance.handlers.listChannelMap ?? new Map()) as Map<string, ChannelMapping>;
+
+  let entryGroups: Array<{ listId: string; listName: string; channelName: string; entries: LeadEntry[] }> = [];
+  let loadError = '';
+  let slackStatus: { ok: boolean; team?: string; error?: string } = { ok: false, error: 'nie skonfigurowano' };
+  let webhook: AttioWebhook | null = null;
+
+  try {
+    // Enrich entries for each list in the channel map
+    const enrichPromises = Array.from(listChannelMap.entries()).map(async ([listId, mapping]) => {
+      const entries = await enrichListEntries(attio, listId, mapping.listName);
+      return { listId, listName: mapping.listName, channelName: mapping.channelName, entries };
+    });
+
+    const [groups, slackResult, webhooks] = await Promise.all([
+      Promise.all(enrichPromises),
+      slack?.testConnection().catch(() => ({ ok: false, error: 'timeout' } as const)) ?? { ok: false, error: 'nie skonfigurowano' },
+      attio.listWebhooks().catch(() => [] as AttioWebhook[]),
+    ]);
+
+    entryGroups = groups;
+    slackStatus = slackResult;
+    webhook = webhooks.find(w => w.target_url.includes(`/${orgId}/slack-lead-notifications`)) ?? null;
+  } catch (err) {
+    loadError = err instanceof Error ? err.message : 'Błąd ładowania danych';
+  }
+
+  res.send(renderSlackLeadPanel(orgId, entryGroups, slackStatus, webhook, listChannelMap, result, loadError));
+});
+
+// POST /test/:orgId/slack-lead-notifications/send
+dashboardRouter.post('/test/:orgId/slack-lead-notifications/send', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'slack-lead-notifications');
+  const redirectBase = `/dashboard/test/${orgId}/slack-lead-notifications`;
+
+  try {
+    const dealRecordId = req.body?.deal_record_id;
+    const listId = req.body?.list_id;
+    if (!dealRecordId || !listId) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Brak deal_record_id lub list_id')); return; }
+    if (!mounted?.instance.handlers.processManual) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana')); return; }
+
+    const result = await mounted.instance.handlers.processManual(dealRecordId, listId) as { success: boolean; personName?: string; dealName?: string; slackChannel?: string; error?: string };
+    const msg = result.success
+      ? `ok:${result.personName ?? '?'} | ${result.dealName ?? '?'} | ${result.slackChannel ?? '?'}`
+      : `error:${result.error ?? 'Nieznany błąd'}`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+  }
+});
+
+// POST /test/:orgId/slack-lead-notifications/reset-webhook
+dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'slack-lead-notifications');
+  const redirectBase = `/dashboard/test/${orgId}/slack-lead-notifications`;
+  if (!mounted) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana')); return; }
+
+  const attio = mounted.ctx.clients.attio;
+  const listChannelMap = (mounted.instance.handlers.listChannelMap ?? new Map()) as Map<string, ChannelMapping>;
+
+  try {
+    try {
+      const webhooks = await attio.listWebhooks();
+      const existing = webhooks.find(w => w.target_url.includes(`/${orgId}/slack-lead-notifications`));
+      if (existing) await attio.deleteWebhook(existing.id.webhook_id);
+    } catch { /* continue */ }
+
+    const targetUrl = `https://custom-integration-hub.velocy.co/${orgId}/slack-lead-notifications/webhook`;
+    const listIds = Array.from(listChannelMap.keys());
+
+    const result = await attio.registerWebhook(targetUrl, [{
+      event_type: 'list-entry.created',
+      filter: { $or: listIds.map(id => ({ field: 'id.list_id', operator: 'equals', value: id })) },
+    }]);
+
+    if (!result) {
+      res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Nie udało się zarejestrować webhooka'));
+      return;
+    }
+
+    const envPrefix = getAllOrganizations().find(o => o.id === orgId)?.envPrefix ?? orgId.toUpperCase();
+    const msg = `ok:Webhook zarejestrowany! Secret: ${result.secret} — dodaj jako ${envPrefix}_ATTIO_WEBHOOK_SECRET do .env`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+  }
+});
+
+// --- Helpers ---
 
 interface LeadEntry {
   dealRecordId: string;
@@ -217,152 +303,138 @@ interface LeadEntry {
   createdAt: string;
 }
 
-async function enrichListEntries(listId: string, listName: string): Promise<LeadEntry[]> {
+async function enrichListEntries(attio: import('./lib/org-context.js').AttioClient, listId: string, listName: string): Promise<LeadEntry[]> {
   const entries = await attio.queryListEntries(listId, 5);
   const enriched: LeadEntry[] = [];
 
-  await Promise.all(entries.map(async (entry) => {
+  await Promise.all(entries.map(async (entry: AttioListEntry) => {
     const deal = await attio.getDealDetails(entry.parent_record_id);
     if (!deal) return;
 
-    const dealName = attio.getDealName(deal);
-    const stage = attio.getDealStage(deal);
-
+    const dealName = getDealName(deal);
+    const stage = getDealStage(deal);
     const associatedPeople = deal.values.associated_people as Array<{ target_record_id: string }> | undefined;
     const firstPersonId = associatedPeople?.[0]?.target_record_id;
     let personName = 'Brak osoby';
     if (firstPersonId) {
       const person = await attio.getPersonDetails(firstPersonId);
-      if (person) personName = attio.getPersonName(person);
+      if (person) personName = getPersonName(person);
     }
 
-    enriched.push({
-      dealRecordId: entry.parent_record_id,
-      listId,
-      listName,
-      dealName,
-      personName,
-      stage,
-      createdAt: entry.created_at,
-    });
+    enriched.push({ dealRecordId: entry.parent_record_id, listId, listName, dealName, personName, stage, createdAt: entry.created_at });
   }));
 
-  // Sort by createdAt desc (Promise.all doesn't preserve order)
   enriched.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return enriched;
 }
 
-dashboardRouter.get('/test/slack-lead-notifications', async (req: Request, res: Response) => {
-  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
-  const result = req.query.result as string | undefined;
-
-  // Fetch all data in parallel
-  let akademiaEntries: LeadEntry[] = [];
-  let raportEntries: LeadEntry[] = [];
-  let loadError = '';
-  let slackStatus: { ok: boolean; team?: string; error?: string } = { ok: false, error: 'nie sprawdzono' };
-  let webhook: attio.AttioWebhook | null = null;
-
-  try {
-    const [akademia, raport, slackResult, webhooks] = await Promise.all([
-      enrichListEntries('a87fbbdf-8cab-4630-a3cc-9f5756dc944a', 'Akademia Biznesu'),
-      enrichListEntries('2e7cb019-4c0e-45c9-8998-c58590a733ef', 'Raport Strategiczny'),
-      slack.testConnection().catch(() => ({ ok: false, error: 'timeout' } as const)),
-      attio.listWebhooks().catch(() => [] as attio.AttioWebhook[]),
-    ]);
-    akademiaEntries = akademia;
-    raportEntries = raport;
-    slackStatus = slackResult;
-    webhook = webhooks.find(w => w.target_url.includes('slack-lead-notifications')) ?? null;
-  } catch (err) {
-    loadError = err instanceof Error ? err.message : 'Błąd ładowania danych';
-  }
-
-  res.send(renderSlackLeadPanel(akademiaEntries, raportEntries, slackStatus, webhook, result, loadError));
-});
-
-dashboardRouter.post('/test/slack-lead-notifications/send', async (req: Request, res: Response) => {
-  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
-
-  try {
-    const dealRecordId = req.body?.deal_record_id;
-    const listId = req.body?.list_id;
-
-    if (!dealRecordId || !listId) {
-      res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Brak deal_record_id lub list_id'));
-      return;
-    }
-
-    const result = await processLeadManual(dealRecordId, listId);
-
-    let msg: string;
-    if (result.success) {
-      msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? '?'} | ${result.slackChannel ?? '?'}`;
-    } else {
-      msg = `error:${result.error ?? 'Nieznany błąd'}`;
-    }
-
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
-  } catch (err) {
-    log.error({ err, path: req.path }, 'Dashboard route error');
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
-  }
-});
-
-dashboardRouter.post('/test/slack-lead-notifications/reset-webhook', async (req: Request, res: Response) => {
-  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
-
-  try {
-    // Delete existing webhook if present
-    try {
-      const webhooks = await attio.listWebhooks();
-      const existing = webhooks.find(w => w.target_url.includes('slack-lead-notifications'));
-      if (existing) {
-        await attio.deleteWebhook(existing.id.webhook_id);
-      }
-    } catch { /* continue to registration */ }
-
-    // Register new webhook
-    const targetUrl = 'https://custom-integration-hub.velocy.co/slack-lead-notifications/webhook';
-    const listIds = Array.from(LIST_CHANNEL_MAP.keys());
-
-    const result = await attio.registerWebhook(targetUrl, [
-      {
-        event_type: 'list-entry.created',
-        filter: {
-          $or: listIds.map(id => ({
-            field: 'id.list_id',
-            operator: 'equals',
-            value: id,
-          })),
-        },
-      },
-    ]);
-
-    if (!result) {
-      res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Nie udało się zarejestrować webhooka w Attio'));
-      return;
-    }
-
-    const msg = `ok:Webhook zarejestrowany! Secret: ${result.secret} — dodaj jako ATTIO_WEBHOOK_SECRET do .env`;
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
-  } catch (err) {
-    log.error({ err, path: req.path }, 'Dashboard route error');
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
-  }
-});
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 
 // --- HTML Rendering ---
 
-function renderLoginPage(error?: string): string {
+const STYLES = `
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; min-height: 100vh; padding: 24px; }
+  .container { max-width: 1000px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; }
+  .header-left { display: flex; align-items: center; gap: 16px; }
+  .org-switcher { background: #161b22; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .org-switcher:focus { border-color: #388bfd; outline: none; }
+  .logout-btn { background: none; border: 1px solid #30363d; color: #8b949e; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-decoration: none; }
+  .logout-btn:hover { border-color: #8b949e; color: #c9d1d9; }
+  .stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px 20px; flex: 1; min-width: 120px; }
+  .stat-value { font-size: 24px; font-weight: 700; color: #f0f6fc; }
+  .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .integration-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 20px; margin-bottom: 12px; }
+  .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .status-active { background: #3fb950; box-shadow: 0 0 6px #3fb95066; }
+  .status-development { background: #d29922; box-shadow: 0 0 6px #d2992266; }
+  .status-inactive { background: #484f58; }
+  .integration-name { font-size: 16px; font-weight: 600; color: #f0f6fc; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 500; text-transform: uppercase; }
+  .badge-webhook { background: #1f6feb33; color: #58a6ff; }
+  .badge-cron { background: #8957e533; color: #bc8cff; }
+  .badge-hybrid { background: #d2992233; color: #d29922; }
+  .description { font-size: 14px; color: #8b949e; margin-bottom: 12px; }
+  .meta { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .meta-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .meta-label { color: #484f58; min-width: 60px; }
+  code { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; background: #0d1117; padding: 2px 6px; border-radius: 4px; color: #79c0ff; }
+  .status-text-active { color: #3fb950; font-weight: 500; }
+  .status-text-development { color: #d29922; font-weight: 500; }
+  .status-text-inactive { color: #484f58; font-weight: 500; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag-trigger { font-size: 11px; padding: 3px 10px; border-radius: 12px; background: #3fb95020; color: #3fb950; border: 1px solid #3fb95040; }
+  .tag-target { font-size: 11px; padding: 3px 10px; border-radius: 12px; background: #58a6ff20; color: #58a6ff; border: 1px solid #58a6ff40; }
+  .back-link { color: #58a6ff; text-decoration: none; font-size: 14px; }
+  .back-link:hover { text-decoration: underline; }
+  .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; word-break: break-all; }
+  .flash-ok { background: #23863633; border: 1px solid #238636; color: #3fb950; }
+  .flash-error { background: #da363433; border: 1px solid #da3634; color: #f85149; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 10px 12px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; border-bottom: 1px solid #21262d; }
+  td { padding: 10px 12px; border-top: 1px solid #21262d; font-size: 13px; }
+  tr:hover td { background: #1c2129; }
+  .btn-process { background: #1f6feb; color: #fff; border: none; padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .btn-process:hover { background: #388bfd; }
+  .section-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .section-title { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .channel-tag { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: #58a6ff20; color: #58a6ff; border: 1px solid #58a6ff40; }
+  .conn-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13px; border-bottom: 1px solid #21262d; }
+  .conn-row:last-child { border-bottom: none; }
+  .conn-label { min-width: 70px; color: #8b949e; font-weight: 500; }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .status-dot-ok { background: #3fb950; box-shadow: 0 0 4px #3fb95066; }
+  .status-dot-warn { background: #d29922; box-shadow: 0 0 4px #d2992266; }
+  .status-dot-error { background: #f85149; box-shadow: 0 0 4px #f8514966; }
+  .status-dot-none { background: #484f58; }
+  .conn-status { flex: 1; }
+  .btn-action { background: #238636; color: #fff; border: none; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .btn-action:hover { background: #2ea043; }
+  .btn-action-subtle { background: none; color: #8b949e; border: 1px solid #30363d; padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .btn-action-subtle:hover { border-color: #8b949e; color: #c9d1d9; }
+  .pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 16px; }
+  .page-link { color: #58a6ff; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; }
+  .page-link:hover { border-color: #58a6ff; }
+  .page-info { font-size: 13px; color: #8b949e; }
+  footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
+  @media (max-width: 700px) { body { padding: 16px; } table { font-size: 12px; } th, td { padding: 8px 6px; } .stat { min-width: 100%; } .stats { flex-direction: column; } }
+`;
+
+function pageShell(title: string, body: string): string {
   return `<!DOCTYPE html>
 <html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login — Integration Hub</title>
+  <title>${escapeHtml(title)} — Integration Hub</title>
   <link rel="icon" href="data:,">
+  <style>${STYLES}</style>
+</head>
+<body>${body}</body>
+</html>`;
+}
+
+function renderLoginPage(error?: string): string {
+  return `<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — Integration Hub</title><link rel="icon" href="data:,">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -390,450 +462,172 @@ function renderLoginPage(error?: string): string {
 </html>`;
 }
 
-function renderDashboardPage(data: { uptime: number; integrations: IntegrationEntry[] }): string {
+function renderDashboardPage(data: {
+  uptime: number;
+  orgs: import('./lib/org-context.js').OrganizationEntry[];
+  selectedOrgId: string;
+  mounted: MountedIntegration[];
+}): string {
   const uptime = formatUptime(data.uptime);
-  const active = data.integrations.filter(i => i.status === 'active').length;
-  const dev = data.integrations.filter(i => i.status === 'development').length;
-  const inactive = data.integrations.filter(i => i.status === 'inactive').length;
+  const active = data.mounted.filter(m => m.status === 'active').length;
+  const dev = data.mounted.filter(m => m.status === 'development').length;
+  const inactive = data.mounted.filter(m => m.status === 'inactive').length;
 
-  const integrationCards = data.integrations.map(i => `
+  const orgOptions = data.orgs.map(o =>
+    `<option value="${escapeHtml(o.id)}" ${o.id === data.selectedOrgId ? 'selected' : ''}>${escapeHtml(o.name)}</option>`
+  ).join('');
+
+  const integrationCards = data.mounted.map(m => {
+    const path = `/${m.orgId}/${m.catalogEntry.id}`;
+    return `
     <div class="integration-card">
       <div class="card-header">
-        <span class="status-dot status-${i.status}"></span>
-        <span class="integration-name">${escapeHtml(i.name)}</span>
-        <span class="badge badge-${i.type}">${i.type}</span>
+        <span class="status-dot status-${m.status}"></span>
+        <span class="integration-name">${escapeHtml(m.catalogEntry.name)}</span>
+        <span class="badge badge-${m.catalogEntry.type}">${m.catalogEntry.type}</span>
       </div>
-      <div class="description">${escapeHtml(i.description)}</div>
+      <div class="description">${escapeHtml(m.catalogEntry.description)}</div>
       <div class="meta">
-        <div class="meta-row">
-          <span class="meta-label">Path</span>
-          <code>${escapeHtml(i.path)}</code>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">Status</span>
-          <span class="status-text status-text-${i.status}">${i.status}</span>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">Dodano</span>
-          <span>${escapeHtml(i.addedAt)}</span>
-        </div>
+        <div class="meta-row"><span class="meta-label">Path</span><code>${escapeHtml(path)}</code></div>
+        <div class="meta-row"><span class="meta-label">Status</span><span class="status-text-${m.status}">${m.status}</span></div>
       </div>
       <div class="tags">
-        ${i.triggers.map(t => `<span class="tag tag-trigger">${escapeHtml(t)}</span>`).join('')}
-        ${i.targets.map(t => `<span class="tag tag-target">${escapeHtml(t)}</span>`).join('')}
+        ${m.catalogEntry.triggers.map(t => `<span class="tag-trigger">${escapeHtml(t)}</span>`).join('')}
+        ${m.catalogEntry.targets.map(t => `<span class="tag-target">${escapeHtml(t)}</span>`).join('')}
       </div>
       <div style="margin-top:12px">
-        <a href="/dashboard/test/${escapeHtml(i.id)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Zarządzaj &rarr;</a>
+        <a href="/dashboard/test/${escapeHtml(m.orgId)}/${escapeHtml(m.catalogEntry.id)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Zarządzaj &rarr;</a>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
-  return `<!DOCTYPE html>
-<html lang="pl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard — Integration Hub</title>
-  <link rel="icon" href="data:,">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; min-height: 100vh; padding: 24px; }
-    .container { max-width: 900px; margin: 0 auto; }
-    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
-    h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; }
-    .logout-btn { background: none; border: 1px solid #30363d; color: #8b949e; padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; text-decoration: none; }
-    .logout-btn:hover { border-color: #8b949e; color: #c9d1d9; }
-    .stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
-    .stat { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px 20px; flex: 1; min-width: 120px; }
-    .stat-value { font-size: 24px; font-weight: 700; color: #f0f6fc; }
-    .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .integration-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 20px; margin-bottom: 12px; }
-    .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
-    .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-    .status-active { background: #3fb950; box-shadow: 0 0 6px #3fb95066; }
-    .status-development { background: #d29922; box-shadow: 0 0 6px #d2992266; }
-    .status-inactive { background: #484f58; }
-    .integration-name { font-size: 16px; font-weight: 600; color: #f0f6fc; }
-    .badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
-    .badge-webhook { background: #1f6feb33; color: #58a6ff; }
-    .badge-cron { background: #8957e533; color: #bc8cff; }
-    .badge-hybrid { background: #d2992233; color: #d29922; }
-    .description { font-size: 14px; color: #8b949e; margin-bottom: 12px; }
-    .meta { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-    .meta-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-    .meta-label { color: #484f58; min-width: 60px; }
-    code { font-family: 'SF Mono', 'Fira Code', Consolas, monospace; font-size: 12px; background: #0d1117; padding: 2px 6px; border-radius: 4px; color: #79c0ff; }
-    .status-text { font-weight: 500; }
-    .status-text-active { color: #3fb950; }
-    .status-text-development { color: #d29922; }
-    .status-text-inactive { color: #484f58; }
-    .tags { display: flex; gap: 6px; flex-wrap: wrap; }
-    .tag { font-size: 11px; padding: 3px 10px; border-radius: 12px; }
-    .tag-trigger { background: #3fb95020; color: #3fb950; border: 1px solid #3fb95040; }
-    .tag-target { background: #58a6ff20; color: #58a6ff; border: 1px solid #58a6ff40; }
-    footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
-    @media (max-width: 600px) {
-      body { padding: 16px; }
-      .stat { min-width: 100%; }
-      .stats { flex-direction: column; }
-    }
-  </style>
-</head>
-<body>
+  const body = `
   <div class="container">
     <header>
-      <h1>Integration Hub</h1>
+      <div class="header-left">
+        <h1>Integration Hub</h1>
+        <select class="org-switcher" onchange="location.href='/dashboard?org='+this.value">
+          ${orgOptions}
+        </select>
+      </div>
       <form method="POST" action="/dashboard/logout" style="display:inline">
         <button type="submit" class="logout-btn">Wyloguj</button>
       </form>
     </header>
-
     <div class="stats">
-      <div class="stat">
-        <div class="stat-value">${uptime}</div>
-        <div class="stat-label">Uptime</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value" style="color:#3fb950">${active}</div>
-        <div class="stat-label">Aktywne</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value" style="color:#d29922">${dev}</div>
-        <div class="stat-label">Development</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value" style="color:#484f58">${inactive}</div>
-        <div class="stat-label">Nieaktywne</div>
-      </div>
+      <div class="stat"><div class="stat-value">${uptime}</div><div class="stat-label">Uptime</div></div>
+      <div class="stat"><div class="stat-value" style="color:#3fb950">${active}</div><div class="stat-label">Aktywne</div></div>
+      <div class="stat"><div class="stat-value" style="color:#d29922">${dev}</div><div class="stat-label">Development</div></div>
+      <div class="stat"><div class="stat-value" style="color:#484f58">${inactive}</div><div class="stat-label">Nieaktywne</div></div>
     </div>
-
-    ${integrationCards}
-
+    ${integrationCards || '<div style="text-align:center;color:#484f58;padding:40px">Brak integracji dla tej organizacji</div>'}
     <footer>custom-integration-hub.velocy.co</footer>
-  </div>
-</body>
-</html>`;
+  </div>`;
+
+  return pageShell('Dashboard', body);
 }
 
-function renderTestPanel(calls: cloudtalk.CloudTalkCall[], currentPage: number, totalPages: number, resultParam?: string): string {
-  let flashHtml = '';
-  if (resultParam) {
-    const isError = resultParam.startsWith('error:');
-    const message = resultParam.replace(/^(ok|error):/, '');
-    flashHtml = `<div class="flash ${isError ? 'flash-error' : 'flash-ok'}">${isError ? 'Błąd: ' : 'Sukces: '}${escapeHtml(message)}</div>`;
-  }
+function renderFlash(resultParam?: string): string {
+  if (!resultParam) return '';
+  const isError = resultParam.startsWith('error:');
+  const message = resultParam.replace(/^(ok|error):/, '');
+  return `<div class="flash ${isError ? 'flash-error' : 'flash-ok'}">${isError ? 'Błąd: ' : 'Sukces: '}${escapeHtml(message)}</div>`;
+}
+
+function renderTestPanel(orgId: string, calls: CloudTalkCall[], currentPage: number, totalPages: number, resultParam?: string): string {
+  const basePath = `/dashboard/test/${orgId}/cloudtalk-call-notes`;
 
   const rows = calls.map(c => {
     const date = new Date(c.startedAt);
     const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     const dir = c.type === 'outgoing' ? 'Wych.' : c.type === 'incoming' ? 'Przych.' : 'Wewn.';
     const dur = c.duration >= 60 ? `${Math.floor(c.duration / 60)}m ${c.duration % 60}s` : `${c.duration}s`;
-    return `
-      <tr>
-        <td>${dateStr}</td>
-        <td><code>${escapeHtml(c.externalNumber)}</code></td>
-        <td>${dir}</td>
-        <td>${dur}</td>
-        <td>${escapeHtml(c.agentName)}</td>
-        <td>${c.recorded ? '<span style="color:#3fb950">Tak</span>' : '<span style="color:#484f58">Nie</span>'}</td>
-        <td>
-          <form method="POST" action="/dashboard/test/cloudtalk-call-notes/process" style="display:inline">
-            <input type="hidden" name="call_id" value="${c.id}">
-            <button type="submit" class="btn-process">Przetwórz</button>
-          </form>
-        </td>
-      </tr>`;
+    return `<tr>
+      <td>${dateStr}</td><td><code>${escapeHtml(c.externalNumber)}</code></td><td>${dir}</td><td>${dur}</td><td>${escapeHtml(c.agentName)}</td>
+      <td>${c.recorded ? '<span style="color:#3fb950">Tak</span>' : '<span style="color:#484f58">Nie</span>'}</td>
+      <td><form method="POST" action="${basePath}/process" style="display:inline"><input type="hidden" name="call_id" value="${c.id}"><button type="submit" class="btn-process">Przetwórz</button></form></td>
+    </tr>`;
   }).join('');
 
-  const paginationItems: string[] = [];
-  if (currentPage > 1) {
-    paginationItems.push(`<a href="/dashboard/test/cloudtalk-call-notes?page=${currentPage - 1}" class="page-link">&larr; Poprzednia</a>`);
-  }
-  paginationItems.push(`<span class="page-info">Strona ${currentPage} z ${totalPages}</span>`);
-  if (currentPage < totalPages) {
-    paginationItems.push(`<a href="/dashboard/test/cloudtalk-call-notes?page=${currentPage + 1}" class="page-link">Następna &rarr;</a>`);
-  }
+  const pagination = [
+    currentPage > 1 ? `<a href="${basePath}?page=${currentPage - 1}" class="page-link">&larr; Poprzednia</a>` : '',
+    `<span class="page-info">Strona ${currentPage} z ${totalPages}</span>`,
+    currentPage < totalPages ? `<a href="${basePath}?page=${currentPage + 1}" class="page-link">Następna &rarr;</a>` : '',
+  ].filter(Boolean).join('');
 
-  return `<!DOCTYPE html>
-<html lang="pl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CloudTalk Call Notes — Integration Hub</title>
-  <link rel="icon" href="data:,">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; min-height: 100vh; padding: 24px; }
-    .container { max-width: 1000px; margin: 0 auto; }
-    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
-    h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; }
-    .back-link { color: #58a6ff; text-decoration: none; font-size: 14px; }
-    .back-link:hover { text-decoration: underline; }
-    .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-    .flash-ok { background: #23863633; border: 1px solid #238636; color: #3fb950; }
-    .flash-error { background: #da363433; border: 1px solid #da3634; color: #f85149; }
-    table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden; }
-    th { background: #1c2129; text-align: left; padding: 10px 12px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
-    td { padding: 10px 12px; border-top: 1px solid #21262d; font-size: 13px; }
-    tr:hover td { background: #1c2129; }
-    code { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #79c0ff; }
-    .btn-process { background: #1f6feb; color: #fff; border: none; padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .btn-process:hover { background: #388bfd; }
-    .pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 16px; }
-    .page-link { color: #58a6ff; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; }
-    .page-link:hover { border-color: #58a6ff; }
-    .page-info { font-size: 13px; color: #8b949e; }
-    footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
-    @media (max-width: 700px) {
-      table { font-size: 12px; }
-      th, td { padding: 8px 6px; }
-    }
-  </style>
-</head>
-<body>
+  const body = `
   <div class="container">
-    <header>
-      <div>
-        <a href="/dashboard" class="back-link">&larr; Dashboard</a>
-        <h1 style="margin-top:8px">CloudTalk Call Notes</h1>
-      </div>
-    </header>
-
-    ${flashHtml}
-
-    <table>
-      <thead>
-        <tr>
-          <th>Data</th>
-          <th>Numer</th>
-          <th>Kierunek</th>
-          <th>Czas</th>
-          <th>Agent</th>
-          <th>Nagranie</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows || '<tr><td colspan="7" style="text-align:center;color:#484f58;padding:20px">Brak rozmów</td></tr>'}
-      </tbody>
-    </table>
-
-    <div class="pagination">
-      ${paginationItems.join('')}
+    <header><div><a href="/dashboard?org=${orgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">CloudTalk Call Notes</h1></div></header>
+    ${renderFlash(resultParam)}
+    <div class="section-card">
+    <table><thead><tr><th>Data</th><th>Numer</th><th>Kierunek</th><th>Czas</th><th>Agent</th><th>Nagranie</th><th></th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="7" style="text-align:center;color:#484f58;padding:20px">Brak rozmów</td></tr>'}</tbody></table>
     </div>
-
+    <div class="pagination">${pagination}</div>
     <footer>custom-integration-hub.velocy.co</footer>
-  </div>
-</body>
-</html>`;
+  </div>`;
+
+  return pageShell('CloudTalk Call Notes', body);
 }
 
 function renderSlackLeadPanel(
-  akademiaEntries: LeadEntry[],
-  raportEntries: LeadEntry[],
+  orgId: string,
+  entryGroups: Array<{ listId: string; listName: string; channelName: string; entries: LeadEntry[] }>,
   slackStatus: { ok: boolean; team?: string; error?: string },
-  webhook: attio.AttioWebhook | null,
+  webhook: AttioWebhook | null,
+  listChannelMap: Map<string, ChannelMapping>,
   resultParam?: string,
   loadError?: string,
 ): string {
-  let flashHtml = '';
-  if (resultParam) {
-    const isError = resultParam.startsWith('error:');
-    const message = resultParam.replace(/^(ok|error):/, '');
-    flashHtml = `<div class="flash ${isError ? 'flash-error' : 'flash-ok'}">${isError ? 'Błąd: ' : 'Sukces: '}${escapeHtml(message)}</div>`;
-  }
-  if (loadError) {
-    flashHtml += `<div class="flash flash-error">Błąd ładowania: ${escapeHtml(loadError)}</div>`;
-  }
+  const basePath = `/dashboard/test/${orgId}/slack-lead-notifications`;
 
-  function renderEntryRows(entries: LeadEntry[]): string {
-    if (entries.length === 0) {
-      return '<tr><td colspan="5" style="text-align:center;color:#484f58;padding:20px">Brak wpisów</td></tr>';
-    }
-    return entries.map(e => {
-      const date = new Date(e.createdAt);
-      const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
-      return `
-        <tr>
-          <td>${dateStr}</td>
-          <td>${escapeHtml(e.dealName)}</td>
-          <td>${escapeHtml(e.personName)}</td>
-          <td>${escapeHtml(e.stage)}</td>
-          <td>
-            <form method="POST" action="/dashboard/test/slack-lead-notifications/send" style="display:inline">
-              <input type="hidden" name="deal_record_id" value="${escapeHtml(e.dealRecordId)}">
-              <input type="hidden" name="list_id" value="${escapeHtml(e.listId)}">
-              <button type="submit" class="btn-process">Wyślij na Slacka</button>
-            </form>
-          </td>
-        </tr>`;
-    }).join('');
-  }
+  let flashHtml = renderFlash(resultParam);
+  if (loadError) flashHtml += `<div class="flash flash-error">Błąd ładowania: ${escapeHtml(loadError)}</div>`;
 
-  // Slack connection status
   const slackDot = slackStatus.ok ? 'status-dot-ok' : 'status-dot-error';
-  const slackLabel = slackStatus.ok
-    ? `Połączono (${escapeHtml(slackStatus.team ?? '?')})`
-    : `Brak połączenia (${escapeHtml(slackStatus.error ?? '?')})`;
+  const slackLabel = slackStatus.ok ? `Połączono (${escapeHtml(slackStatus.team ?? '?')})` : `Brak połączenia (${escapeHtml(slackStatus.error ?? '?')})`;
 
-  // Webhook status
-  let webhookDot: string;
-  let webhookLabel: string;
-  let webhookAction: string;
-
+  let webhookDot: string, webhookLabel: string, webhookAction: string;
   if (!webhook) {
-    webhookDot = 'status-dot-none';
-    webhookLabel = 'Niezarejestrowany';
-    webhookAction = `<form method="POST" action="/dashboard/test/slack-lead-notifications/reset-webhook" style="display:inline">
-      <button type="submit" class="btn-action">Zarejestruj</button>
-    </form>`;
+    webhookDot = 'status-dot-none'; webhookLabel = 'Niezarejestrowany';
+    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action">Zarejestruj</button></form>`;
   } else if (webhook.status === 'active') {
-    webhookDot = 'status-dot-ok';
-    webhookLabel = `Aktywny <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
-    webhookAction = `<form method="POST" action="/dashboard/test/slack-lead-notifications/reset-webhook" style="display:inline">
-      <button type="submit" class="btn-action-subtle">Zarejestruj ponownie</button>
-    </form>`;
+    webhookDot = 'status-dot-ok'; webhookLabel = `Aktywny <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
+    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action-subtle">Zarejestruj ponownie</button></form>`;
   } else {
     webhookDot = webhook.status === 'degraded' ? 'status-dot-warn' : 'status-dot-error';
-    webhookLabel = `${webhook.status.charAt(0).toUpperCase() + webhook.status.slice(1)} <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
-    webhookAction = `<form method="POST" action="/dashboard/test/slack-lead-notifications/reset-webhook" style="display:inline">
-      <button type="submit" class="btn-action">Usuń i zarejestruj ponownie</button>
-    </form>`;
+    webhookLabel = `${webhook.status} <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
+    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action">Usuń i zarejestruj ponownie</button></form>`;
   }
 
-  return `<!DOCTYPE html>
-<html lang="pl">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Slack Lead Notifications — Integration Hub</title>
-  <link rel="icon" href="data:,">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; min-height: 100vh; padding: 24px; }
-    .container { max-width: 1000px; margin: 0 auto; }
-    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
-    h1 { font-size: 22px; font-weight: 600; color: #f0f6fc; }
-    .back-link { color: #58a6ff; text-decoration: none; font-size: 14px; }
-    .back-link:hover { text-decoration: underline; }
-    .flash { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; word-break: break-all; }
-    .flash-ok { background: #23863633; border: 1px solid #238636; color: #3fb950; }
-    .flash-error { background: #da363433; border: 1px solid #da3634; color: #f85149; }
-    .section-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-    .section-title { font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-    .channel-tag { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: #58a6ff20; color: #58a6ff; border: 1px solid #58a6ff40; }
-    .conn-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 13px; border-bottom: 1px solid #21262d; }
-    .conn-row:last-child { border-bottom: none; }
-    .conn-label { min-width: 70px; color: #8b949e; font-weight: 500; }
-    .conn-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .status-dot-ok { background: #3fb950; box-shadow: 0 0 4px #3fb95066; }
-    .status-dot-warn { background: #d29922; box-shadow: 0 0 4px #d2992266; }
-    .status-dot-error { background: #f85149; box-shadow: 0 0 4px #f8514966; }
-    .status-dot-none { background: #484f58; }
-    .conn-status { flex: 1; }
-    .btn-action { background: #238636; color: #fff; border: none; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .btn-action:hover { background: #2ea043; }
-    .btn-action-subtle { background: none; color: #8b949e; border: 1px solid #30363d; padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; }
-    .btn-action-subtle:hover { border-color: #8b949e; color: #c9d1d9; }
-    table { width: 100%; border-collapse: collapse; }
-    th { text-align: left; padding: 8px 10px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; border-bottom: 1px solid #21262d; }
-    td { padding: 8px 10px; border-top: 1px solid #21262d; font-size: 13px; }
-    tr:hover td { background: #1c2129; }
-    code { font-family: 'SF Mono', Consolas, monospace; font-size: 12px; color: #79c0ff; background: #0d1117; padding: 2px 6px; border-radius: 4px; }
-    .btn-process { background: #1f6feb; color: #fff; border: none; padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .btn-process:hover { background: #388bfd; }
-    footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
-    @media (max-width: 700px) {
-      table { font-size: 12px; }
-      th, td { padding: 6px 4px; }
-    }
-  </style>
-</head>
-<body>
+  const groupHtml = entryGroups.map(g => {
+    const entryRows = g.entries.length === 0
+      ? '<tr><td colspan="5" style="text-align:center;color:#484f58;padding:20px">Brak wpisów</td></tr>'
+      : g.entries.map(e => {
+        const date = new Date(e.createdAt);
+        const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+        return `<tr><td>${dateStr}</td><td>${escapeHtml(e.dealName)}</td><td>${escapeHtml(e.personName)}</td><td>${escapeHtml(e.stage)}</td>
+        <td><form method="POST" action="${basePath}/send" style="display:inline"><input type="hidden" name="deal_record_id" value="${escapeHtml(e.dealRecordId)}"><input type="hidden" name="list_id" value="${escapeHtml(e.listId)}"><button type="submit" class="btn-process">Wyślij na Slacka</button></form></td></tr>`;
+      }).join('');
+
+    return `<div class="section-card">
+      <div class="section-title">Kampania: ${escapeHtml(g.listName)} <span class="channel-tag">${escapeHtml(g.channelName)}</span></div>
+      <table><thead><tr><th>Data</th><th>Deal</th><th>Osoba</th><th>Etap</th><th></th></tr></thead><tbody>${entryRows}</tbody></table>
+    </div>`;
+  }).join('');
+
+  const body = `
   <div class="container">
-    <header>
-      <div>
-        <a href="/dashboard" class="back-link">&larr; Dashboard</a>
-        <h1 style="margin-top:8px">Slack Lead Notifications</h1>
-      </div>
-    </header>
-
+    <header><div><a href="/dashboard?org=${orgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">Slack Lead Notifications</h1></div></header>
     ${flashHtml}
-
     <div class="section-card">
       <div class="section-title">Połączenia</div>
-      <div class="conn-row">
-        <span class="conn-label">Slack</span>
-        <span class="conn-dot ${slackDot}"></span>
-        <span class="conn-status">${slackLabel}</span>
-      </div>
-      <div class="conn-row">
-        <span class="conn-label">Webhook</span>
-        <span class="conn-dot ${webhookDot}"></span>
-        <span class="conn-status">${webhookLabel}</span>
-        ${webhookAction}
-      </div>
+      <div class="conn-row"><span class="conn-label">Slack</span><span class="conn-dot ${slackDot}"></span><span class="conn-status">${slackLabel}</span></div>
+      <div class="conn-row"><span class="conn-label">Webhook</span><span class="conn-dot ${webhookDot}"></span><span class="conn-status">${webhookLabel}</span>${webhookAction}</div>
     </div>
-
-    <div class="section-card">
-      <div class="section-title">
-        Kampania: Akademia Biznesu
-        <span class="channel-tag">#nowe-leady-akademia</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Data</th>
-            <th>Deal</th>
-            <th>Osoba</th>
-            <th>Etap</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${renderEntryRows(akademiaEntries)}
-        </tbody>
-      </table>
-    </div>
-
-    <div class="section-card">
-      <div class="section-title">
-        Kampania: Raport Strategiczny
-        <span class="channel-tag">#nowe-leady-raport</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Data</th>
-            <th>Deal</th>
-            <th>Osoba</th>
-            <th>Etap</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${renderEntryRows(raportEntries)}
-        </tbody>
-      </table>
-    </div>
-
+    ${groupHtml}
     <footer>custom-integration-hub.velocy.co</footer>
-  </div>
-</body>
-</html>`;
-}
+  </div>`;
 
-// --- Helpers ---
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function formatUptime(seconds: number): string {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  return pageShell('Slack Lead Notifications', body);
 }
