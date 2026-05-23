@@ -1,12 +1,12 @@
 import express from 'express';
+import { resolve } from 'path';
 import { config } from './config.js';
 import { logger } from './lib/logger.js';
 import { loadRegistry, getActiveIntegrations, getAllIntegrations, importIntegration } from './lib/registry.js';
 import { dashboardRouter } from './dashboard.js';
-import { startPoller as startCallNotesPoller } from './integrations/cloudtalk-call-notes/poller.js';
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 1); // Trust only the first proxy (nginx)
 
 app.use(express.json({
   limit: '2mb',
@@ -65,9 +65,20 @@ async function bootstrap() {
     logger.warn('No active integrations found in registry');
   }
 
-  // Start pollers for active integrations
-  if (active.some(i => i.id === 'cloudtalk-call-notes')) {
-    startCallNotesPoller();
+  // Start pollers for hybrid/cron integrations (dynamic import — no static coupling)
+  for (const entry of active) {
+    if (entry.type === 'hybrid' || entry.type === 'cron') {
+      try {
+        const modulePath = resolve(process.cwd(), entry.module);
+        const mod = await import(modulePath);
+        if (typeof mod.startPoller === 'function') {
+          mod.startPoller();
+          logger.info({ id: entry.id }, 'Poller started');
+        }
+      } catch (err) {
+        logger.error({ err, id: entry.id }, 'Failed to start poller');
+      }
+    }
   }
 
   // Global error handler
@@ -80,9 +91,12 @@ async function bootstrap() {
     logger.info({ port: config.port, env: config.nodeEnv, activeIntegrations: active.length }, 'Custom Integration Hub started');
   });
 
-  // Graceful shutdown
-  process.on('SIGTERM', () => {
-    logger.info('SIGTERM received, shutting down gracefully');
+  // Graceful shutdown — shared by SIGTERM and SIGINT
+  let shuttingDown = false;
+  function shutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'Shutdown signal received, closing gracefully');
     server.close(() => {
       logger.info('Server closed');
       process.exit(0);
@@ -91,8 +105,21 @@ async function bootstrap() {
       logger.error('Forced shutdown after 30s timeout');
       process.exit(1);
     }, 30_000).unref();
-  });
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
+
+// Global safety nets — must be registered before bootstrap
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Unhandled promise rejection');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception — shutting down');
+  process.exit(1);
+});
 
 bootstrap().catch(err => {
   logger.fatal({ err }, 'Failed to start server');

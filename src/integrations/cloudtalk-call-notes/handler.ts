@@ -218,8 +218,10 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   // Respond immediately so CloudTalk doesn't retry
   res.status(200).json({ status: 'accepted' });
 
-  // Process asynchronously
+  // Process asynchronously — delete idempotency key on failure to allow retry
   processCall(payload).catch(err => {
-    log.error({ err, payload }, 'Unhandled error in call processing');
+    const callId = payload.call_id ?? payload.call_uuid;
+    if (callId) processedCalls.delete(callId);
+    log.error({ err, payload }, 'Unhandled error in call processing — will retry on next webhook');
   });
 }

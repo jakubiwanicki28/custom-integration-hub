@@ -22,8 +22,8 @@ while true; do
 
     if ! git pull origin "$BRANCH" --ff-only; then
       echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') git pull FAILED"
-    elif ! npm install --silent; then
-      echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') npm install FAILED"
+    elif ! npm ci --silent; then
+      echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') npm ci FAILED"
     elif ! npm run build; then
       echo "[autodeploy] $(date '+%Y-%m-%d %H:%M:%S') BUILD FAILED"
     else

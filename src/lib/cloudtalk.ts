@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout, safeJson } from './fetch.js';
 
 const log = logger.child({ lib: 'cloudtalk' });
 
@@ -94,7 +94,7 @@ export async function getCallDetails(callId: string): Promise<CloudTalkCall | nu
     return null;
   }
 
-  const data: CdrResponse = await res.json();
+  const data = await safeJson<CdrResponse>(res);
   const entries = data.responseData?.data ?? [];
 
   log.info({ callId, totalEntries: entries.length, firstId: entries[0]?.Cdr.id, lastId: entries[entries.length - 1]?.Cdr.id }, 'Searching for call in batch');
@@ -126,7 +126,7 @@ export async function getRecentCalls(limit = 10, page = 1): Promise<CallsPage> {
     return { calls: [], totalPages: 0, currentPage: page, totalItems: 0 };
   }
 
-  const data: CdrResponse = await res.json();
+  const data = await safeJson<CdrResponse>(res);
   return {
     calls: (data.responseData?.data ?? []).map(parseCall),
     totalPages: data.responseData?.pageCount ?? 0,
@@ -145,7 +145,7 @@ export async function getCallsSince(since: Date, limit = 20): Promise<CloudTalkC
     return [];
   }
 
-  const data: CdrResponse = await res.json();
+  const data = await safeJson<CdrResponse>(res);
   return (data.responseData?.data ?? []).map(parseCall);
 }
 
@@ -161,7 +161,7 @@ export async function downloadRecording(callId: string): Promise<Buffer | null> 
   const contentType = res.headers.get('content-type') ?? '';
   if (contentType.includes('json')) {
     // Some responses return JSON with error info
-    const body = await res.json();
+    const body = await safeJson(res);
     log.warn({ callId, body }, 'Recording endpoint returned JSON instead of audio');
     return null;
   }

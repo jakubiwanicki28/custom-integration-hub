@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout, safeJson, safeText } from './fetch.js';
 
 const log = logger.child({ lib: 'attio' });
 
@@ -105,7 +105,7 @@ export async function findPersonByPhone(phone: string): Promise<AttioPerson | nu
       continue;
     }
 
-    const data: AttioQueryResponse<AttioPerson> = await res.json();
+    const data = await safeJson<AttioQueryResponse<AttioPerson>>(res);
     if (data.data.length > 0) {
       log.info({ phone, variant, recordId: data.data[0].id.record_id }, 'Person found');
       return data.data[0];
@@ -135,7 +135,7 @@ export async function findPersonByEmail(email: string): Promise<AttioPerson | nu
     return null;
   }
 
-  const data: AttioQueryResponse<AttioPerson> = await res.json();
+  const data = await safeJson<AttioQueryResponse<AttioPerson>>(res);
   return data.data[0] ?? null;
 }
 
@@ -149,7 +149,7 @@ export async function getDealDetails(dealRecordId: string): Promise<AttioDeal | 
     return null;
   }
 
-  const data: { data: AttioDeal } = await res.json();
+  const data = await safeJson<{ data: AttioDeal }>(res);
   return data.data;
 }
 
@@ -227,7 +227,7 @@ export async function createNote(params: {
   });
 
   if (!res.ok) {
-    const errorBody = await res.text();
+    const errorBody = await safeText(res);
     log.error(
       { status: res.status, parentObject: params.parentObject, parentRecordId: params.parentRecordId, errorBody },
       'Failed to create note'
@@ -235,7 +235,7 @@ export async function createNote(params: {
     return null;
   }
 
-  const data: AttioNoteResponse = await res.json();
+  const data = await safeJson<AttioNoteResponse>(res);
   const noteId = data.data.id.note_id;
   log.info(
     { noteId, parentObject: params.parentObject, parentRecordId: params.parentRecordId },
@@ -256,7 +256,7 @@ export async function getPersonDetails(recordId: string): Promise<AttioPerson | 
     return null;
   }
 
-  const data: { data: AttioPerson } = await res.json();
+  const data = await safeJson<{ data: AttioPerson }>(res);
   return data.data;
 }
 
@@ -288,7 +288,7 @@ export async function queryListEntries(listId: string, limit = 5): Promise<Attio
     return [];
   }
 
-  const data: AttioQueryResponse<AttioListEntry> = await res.json();
+  const data = await safeJson<AttioQueryResponse<AttioListEntry>>(res);
   return data.data;
 }
 
@@ -312,12 +312,12 @@ export async function registerWebhook(
   });
 
   if (!res.ok) {
-    const errorBody = await res.text();
+    const errorBody = await safeText(res);
     log.error({ status: res.status, errorBody }, 'Failed to register webhook');
     return null;
   }
 
-  const data: { data: AttioWebhook & { secret: string } } = await res.json();
+  const data = await safeJson<{ data: AttioWebhook & { secret: string } }>(res);
   const webhookId = data.data.id.webhook_id;
   log.info({ webhookId, targetUrl }, 'Attio webhook registered');
   return { webhookId, secret: data.data.secret };
@@ -333,7 +333,7 @@ export async function listWebhooks(): Promise<AttioWebhook[]> {
     return [];
   }
 
-  const data: AttioQueryResponse<AttioWebhook> = await res.json();
+  const data = await safeJson<AttioQueryResponse<AttioWebhook>>(res);
   return data.data;
 }
 

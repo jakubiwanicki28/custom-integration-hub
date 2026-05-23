@@ -14,11 +14,45 @@ export async function fetchWithTimeout(
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
+      const hostname = safeHostname(url);
       log.error({ url, timeoutMs }, 'Request timed out');
-      throw new Error(`Request to ${new URL(url).hostname} timed out after ${timeoutMs}ms`);
+      throw new Error(`Request to ${hostname} timed out after ${timeoutMs}ms`);
     }
     throw err;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+/** Parse JSON from Response with safe error handling — never throws SyntaxError */
+export async function safeJson<T>(res: Response): Promise<T> {
+  try {
+    return await res.json() as T;
+  } catch (err) {
+    const hostname = safeHostname(res.url);
+    const body = await safeText(res).catch(() => '<unreadable>');
+    log.error({ url: res.url, status: res.status, body: body.slice(0, 500) },
+      `Failed to parse JSON from ${hostname}`);
+    throw new Error(`Invalid JSON response from ${hostname} (status ${res.status})`);
+  }
+}
+
+/** Read Response body as text with safe error handling */
+export async function safeText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch (err) {
+    const hostname = safeHostname(res.url);
+    log.error({ url: res.url, status: res.status },
+      `Failed to read response text from ${hostname}`);
+    throw new Error(`Failed to read response from ${hostname} (status ${res.status})`);
+  }
+}
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
   }
 }

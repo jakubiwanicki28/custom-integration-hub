@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout, safeJson } from './fetch.js';
 
 const log = logger.child({ lib: 'slack' });
 
@@ -71,7 +71,7 @@ export async function postMessage(
     return false;
   }
 
-  const data: SlackPostMessageResponse = await res.json();
+  const data = await safeJson<SlackPostMessageResponse>(res);
 
   if (!data.ok) {
     log.error({ channelId, error: data.error }, 'Slack postMessage failed');
@@ -92,7 +92,7 @@ export async function testConnection(): Promise<{ ok: boolean; team?: string; er
     return { ok: false, error: `HTTP ${res.status}` };
   }
 
-  const data: SlackAuthTestResponse = await res.json();
+  const data = await safeJson<SlackAuthTestResponse>(res);
 
   if (!data.ok) {
     return { ok: false, error: data.error };

@@ -7,6 +7,9 @@ import { processCallManual, type ProcessResult } from './integrations/cloudtalk-
 import * as attio from './lib/attio.js';
 import * as slack from './lib/slack.js';
 import { processLeadManual, LIST_CHANNEL_MAP } from './integrations/slack-lead-notifications/handler.js';
+import { createLogger } from './lib/logger.js';
+
+const log = createLogger('dashboard');
 
 export const dashboardRouter = Router();
 
@@ -164,32 +167,42 @@ dashboardRouter.post('/logout', (_req: Request, res: Response) => {
 dashboardRouter.get('/test/cloudtalk-call-notes', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
 
-  const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
-  const result = req.query.result as string | undefined;
-  const callsPage = await cloudtalk.getRecentCalls(5, page);
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const result = req.query.result as string | undefined;
+    const callsPage = await cloudtalk.getRecentCalls(5, page);
 
-  res.send(renderTestPanel(callsPage.calls, callsPage.currentPage, callsPage.totalPages, result));
+    res.send(renderTestPanel(callsPage.calls, callsPage.currentPage, callsPage.totalPages, result));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.send(renderTestPanel([], 1, 0, 'error:' + (err instanceof Error ? err.message : 'Błąd połączenia z CloudTalk')));
+  }
 });
 
 dashboardRouter.post('/test/cloudtalk-call-notes/process', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
 
-  const callId = req.body?.call_id;
-  if (!callId) {
-    res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent('error:Brak call_id'));
-    return;
+  try {
+    const callId = req.body?.call_id;
+    if (!callId) {
+      res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent('error:Brak call_id'));
+      return;
+    }
+
+    const result = await processCallManual(callId);
+
+    let msg: string;
+    if (result.success) {
+      msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? 'brak deala'} | ${result.notesCreated ?? 0} notatek`;
+    } else {
+      msg = `error:${result.error ?? 'Nieznany błąd'}`;
+    }
+
+    res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
   }
-
-  const result = await processCallManual(callId);
-
-  let msg: string;
-  if (result.success) {
-    msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? 'brak deala'} | ${result.notesCreated ?? 0} notatek`;
-  } else {
-    msg = `error:${result.error ?? 'Nieznany błąd'}`;
-  }
-
-  res.redirect('/dashboard/test/cloudtalk-call-notes?result=' + encodeURIComponent(msg));
 });
 
 // --- Test Panel: Slack Lead Notifications ---
@@ -272,62 +285,72 @@ dashboardRouter.get('/test/slack-lead-notifications', async (req: Request, res: 
 dashboardRouter.post('/test/slack-lead-notifications/send', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
 
-  const dealRecordId = req.body?.deal_record_id;
-  const listId = req.body?.list_id;
+  try {
+    const dealRecordId = req.body?.deal_record_id;
+    const listId = req.body?.list_id;
 
-  if (!dealRecordId || !listId) {
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Brak deal_record_id lub list_id'));
-    return;
+    if (!dealRecordId || !listId) {
+      res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Brak deal_record_id lub list_id'));
+      return;
+    }
+
+    const result = await processLeadManual(dealRecordId, listId);
+
+    let msg: string;
+    if (result.success) {
+      msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? '?'} | ${result.slackChannel ?? '?'}`;
+    } else {
+      msg = `error:${result.error ?? 'Nieznany błąd'}`;
+    }
+
+    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
   }
-
-  const result = await processLeadManual(dealRecordId, listId);
-
-  let msg: string;
-  if (result.success) {
-    msg = `ok:${result.personName ?? '?'} | ${result.dealName ?? '?'} | ${result.slackChannel ?? '?'}`;
-  } else {
-    msg = `error:${result.error ?? 'Nieznany błąd'}`;
-  }
-
-  res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
 });
 
 dashboardRouter.post('/test/slack-lead-notifications/reset-webhook', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
 
-  // Delete existing webhook if present
   try {
-    const webhooks = await attio.listWebhooks();
-    const existing = webhooks.find(w => w.target_url.includes('slack-lead-notifications'));
-    if (existing) {
-      await attio.deleteWebhook(existing.id.webhook_id);
-    }
-  } catch { /* continue to registration */ }
+    // Delete existing webhook if present
+    try {
+      const webhooks = await attio.listWebhooks();
+      const existing = webhooks.find(w => w.target_url.includes('slack-lead-notifications'));
+      if (existing) {
+        await attio.deleteWebhook(existing.id.webhook_id);
+      }
+    } catch { /* continue to registration */ }
 
-  // Register new webhook
-  const targetUrl = 'https://custom-integration-hub.velocy.co/slack-lead-notifications/webhook';
-  const listIds = Array.from(LIST_CHANNEL_MAP.keys());
+    // Register new webhook
+    const targetUrl = 'https://custom-integration-hub.velocy.co/slack-lead-notifications/webhook';
+    const listIds = Array.from(LIST_CHANNEL_MAP.keys());
 
-  const result = await attio.registerWebhook(targetUrl, [
-    {
-      event_type: 'list-entry.created',
-      filter: {
-        $or: listIds.map(id => ({
-          field: 'id.list_id',
-          operator: 'equals',
-          value: id,
-        })),
+    const result = await attio.registerWebhook(targetUrl, [
+      {
+        event_type: 'list-entry.created',
+        filter: {
+          $or: listIds.map(id => ({
+            field: 'id.list_id',
+            operator: 'equals',
+            value: id,
+          })),
+        },
       },
-    },
-  ]);
+    ]);
 
-  if (!result) {
-    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Nie udało się zarejestrować webhooka w Attio'));
-    return;
+    if (!result) {
+      res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:Nie udało się zarejestrować webhooka w Attio'));
+      return;
+    }
+
+    const msg = `ok:Webhook zarejestrowany! Secret: ${result.secret} — dodaj jako ATTIO_WEBHOOK_SECRET do .env`;
+    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
   }
-
-  const msg = `ok:Webhook zarejestrowany! Secret: ${result.secret} — dodaj jako ATTIO_WEBHOOK_SECRET do .env`;
-  res.redirect('/dashboard/test/slack-lead-notifications?result=' + encodeURIComponent(msg));
 });
 
 // --- HTML Rendering ---

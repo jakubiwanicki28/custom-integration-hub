@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { logger } from './logger.js';
-import { fetchWithTimeout } from './fetch.js';
+import { fetchWithTimeout, safeJson, safeText } from './fetch.js';
 
 const log = logger.child({ lib: 'openrouter' });
 
@@ -41,12 +41,12 @@ async function chatCompletion(
   }, 120_000); // 2 min timeout — audio transcription can be slow
 
   if (!res.ok) {
-    const errorBody = await res.text();
+    const errorBody = await safeText(res);
     log.error({ model, status: res.status, errorBody }, 'OpenRouter request failed');
     return null;
   }
 
-  const data: ChatCompletionResponse = await res.json();
+  const data = await safeJson<ChatCompletionResponse>(res);
 
   if (data.usage) {
     log.info(

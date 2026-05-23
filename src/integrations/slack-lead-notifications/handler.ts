@@ -195,9 +195,17 @@ export async function processLeadManual(dealRecordId: string, listId: string): P
 
 // --- Webhook signature verification ---
 
+let signatureWarningLogged = false;
+
 function verifySignature(rawBody: Buffer, signature: string): boolean {
   const secret = config.attio.webhookSecret;
-  if (!secret) return true; // Skip if no secret configured
+  if (!secret) {
+    if (!signatureWarningLogged) {
+      log.warn('Webhook signature verification SKIPPED — no ATTIO_WEBHOOK_SECRET configured. Endpoint is open to any sender.');
+      signatureWarningLogged = true;
+    }
+    return true;
+  }
 
   const hmac = createHmac('sha256', secret);
   hmac.update(rawBody);
@@ -241,7 +249,10 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     return;
   }
 
+  // Delete idempotency key on failure to allow retry
   processListEntry(listId, dealRecordId, idempotencyKey).catch(err => {
-    log.error({ err, listId, dealRecordId }, 'Unhandled error in lead processing');
+    const key = idempotencyKey || `${listId}:${dealRecordId}`;
+    processedEntries.delete(key);
+    log.error({ err, listId, dealRecordId }, 'Unhandled error in lead processing — will retry on next webhook');
   });
 }
