@@ -10,50 +10,83 @@ Custom Integration Hub — coded automations deployed on a VPS, replacing n8n. E
 
 ```bash
 npm run dev          # Start dev server with hot-reload (tsx watch)
-npm run build        # Compile TypeScript to dist/
+npm run build        # Compile TypeScript to dist/ (uses npx tsc)
 npm run start        # Run compiled server (production)
 npm run typecheck    # Type-check without emitting
 ```
 
 ## Branches
 
-- **main**: production-ready code
+- **main**: production-ready code, auto-deployed to VPS via `deploy/autodeploy.sh`
 - **dev**: active development branch; PRs target `main`
 
 ## Architecture
 
 ```
 src/
-  server.ts                          # Express app, loads registry, mounts routes
-  config.ts                          # Env validation — fails fast if vars missing
-  dashboard.ts                       # Admin dashboard (SSR HTML, auth, rate limiting)
+  server.ts                          # Express app, loads registry, mounts routes, starts pollers
+  config.ts                          # Env validation — fails fast if required vars missing
+  dashboard.ts                       # Admin dashboard (SSR HTML, auth, rate limiting, test panels)
   lib/
-    logger.ts                        # Pino logger
+    logger.ts                        # Pino logger (pretty in dev, JSON in prod)
     registry.ts                      # Reads integrations.json, dynamic imports
+    fetch.ts                         # fetchWithTimeout wrapper (30s default, AbortController)
     attio.ts                         # Attio CRM API client
     cloudtalk.ts                     # CloudTalk API client
     openrouter.ts                    # OpenRouter AI API client
+    slack.ts                         # Slack API client (Block Kit)
   integrations/
-    [integration-name]/
+    cloudtalk-call-notes/            # AI call notes: CloudTalk → OpenRouter → Attio
+      index.ts                       # Exports { router, startPoller }
+      routes.ts                      # POST /webhook
+      handler.ts                     # Pipeline + processCallManual for testing
+      transcribe.ts                  # Download recording → OpenRouter transcription
+      summarize.ts                   # Format note content with recording link
+      poller.ts                      # Polls CloudTalk API every 2 min for new calls
+      types.ts                       # CloudTalkWebhookPayload, ProcessedNote
+    slack-lead-notifications/        # New lead alerts: Attio webhook → Slack
       index.ts                       # Exports { router }
-      routes.ts                      # Express router
-      handler.ts                     # Business logic
-      types.ts                       # Integration-specific types
+      routes.ts                      # POST /webhook
+      handler.ts                     # Pipeline + processLeadManual for testing
+      types.ts                       # AttioWebhookPayload, LeadNotificationData
+```
+
+### How the Server Boots
+
+```
+server.ts bootstrap():
+  1. loadRegistry()           → reads integrations.json into memory
+  2. mount /dashboard         → admin panel (password-protected)
+  3. mount /health            → public JSON status endpoint
+  4. for each integration where status === "active":
+       dynamic import(entry.module)
+       app.use(entry.path, mod.router)
+  5. start pollers (cloudtalk-call-notes poller if active)
+  6. mount global error handler
+  7. app.listen(3100)
+  8. register SIGTERM handler (graceful shutdown, 30s timeout)
 ```
 
 ### Integration Registry (`integrations.json`)
 
-Central source of truth. Server reads it at startup, mounts only `status: "active"` integrations. Health endpoint (`GET /health`) lists all integrations and their status.
+Central source of truth. Server reads it at startup, mounts only `status: "active"` integrations. Health endpoint (`GET /health`) and dashboard both read from this registry.
 
 Statuses: `active` | `inactive` | `development`
 
+Types: `webhook` | `cron` | `hybrid`
+
 ### Adding a New Integration
 
-1. Create folder `src/integrations/[name]/` with `index.ts`, `routes.ts`, `handler.ts`
+1. Create folder `src/integrations/[name]/` with `index.ts`, `routes.ts`, `handler.ts`, `types.ts`
 2. `index.ts` must export `{ router }` (Express Router)
 3. Add entry to `integrations.json` with `status: "development"`
-4. Set to `"active"` when ready
-5. Routes mount at the `path` specified in registry (e.g., `/my-integration`)
+4. Implement `handler.ts` — follow respond-immediately-process-async pattern
+5. Export a `process[X]Manual()` function for test panel
+6. Add test panel routes in `src/dashboard.ts` under `/dashboard/test/[id]`
+7. Test locally via dashboard test panel
+8. Set to `"active"` when ready
+9. If new external service needed, add client to `src/lib/`
+10. If new env vars needed, add to both `config.ts` and `.env.example`
 
 ### URL Pattern
 
@@ -61,256 +94,163 @@ Statuses: `active` | `inactive` | `development`
 
 ### Admin Dashboard
 
-`GET /dashboard` — password-protected status page showing all integrations and their status. Set `DASHBOARD_PASSWORD` in `.env` to enable. Rate-limited login (5 attempts/min, 15 min lockout). Session via signed HttpOnly cookie (7 days).
+`GET /dashboard` — password-protected status page. Set `DASHBOARD_PASSWORD` in `.env`.
+
+Features:
+- Integration status overview (active/development/inactive counts, uptime)
+- Per-integration card with triggers, targets, status, path
+- "Testuj →" link per integration to test panel
+- Test panels: list source data, manually trigger pipeline, see results
+- Rate-limited login (5 attempts/min, 15 min lockout)
+- Session via signed HttpOnly cookie (7 days)
+- Dark theme, responsive
 
 ### Notes in Attio CRM
 
-When creating notes, always create TWO: one on the **Person** and one on the **Deal**. Person note title includes deal name for context. See `docs/attio-crm-map.md` for API details.
+When creating notes, always create TWO: one on the **Person** and one on the **Deal**. Person note title includes deal name for context. If no deal found, create only the Person note. Include recording link if available. See `docs/attio-crm-map.md` for API details.
+
+---
+
+## Existing Integrations
+
+### 1. CloudTalk Call Notes (`cloudtalk-call-notes`)
+
+**Type:** hybrid (webhook + polling)
+**Trigger:** CloudTalk call ends → poller picks it up every 2 min (also accepts direct webhook POST)
+**Path:** `/cloudtalk-call-notes`
+
+**Pipeline:**
+1. New call detected (via poller or webhook)
+2. Skip if duration < 30s
+3. Find Person in Attio by phone number (3 format variants, email fallback)
+4. Find best Deal (active > closed, newest first)
+5. Download WAV recording from CloudTalk
+6. Send audio to OpenRouter (Gemini) → Polish transcription + summary in one pass
+7. Format markdown note with: AI summary, call details, clickable recording link
+8. Create note on Person (title: `"Rozmowa — {Deal} — {date}"`)
+9. Create note on Deal (title: `"Rozmowa — {date}"`)
+
+**Poller:** Runs every 2 min, checks CloudTalk API with `date_from` filter. 5-min lookback on startup. Idempotency via in-memory Map (1h TTL).
+
+**Test panel:** `/dashboard/test/cloudtalk-call-notes` — paginated call list (5/page), "Przetwórz" button per call.
+
+**Key files:**
+- `handler.ts` — `webhookHandler()` (async) + `processCallManual()` (returns result)
+- `transcribe.ts` — 5s wait + 15s retry for recording availability
+- `summarize.ts` — formatNote() with recording link
+- `poller.ts` — `startPoller()`, called from server.ts
+
+### 2. Slack Lead Notifications (`slack-lead-notifications`)
+
+**Type:** webhook
+**Trigger:** Attio webhook fires when new entry added to campaign list
+**Path:** `/slack-lead-notifications`
+
+**Pipeline:**
+1. Receive Attio webhook (`list-entry.created` event)
+2. Verify HMAC signature (if `ATTIO_WEBHOOK_SECRET` configured)
+3. Fetch deal details → fetch associated person
+4. Format Slack Block Kit message (person name, email, phone, "Open in Attio" button)
+5. Post to mapped Slack channel based on list ID
+
+**List → Channel mapping (hardcoded in handler.ts):**
+- Kampania: Akademia Biznesu → `#nowe-leady-akademia`
+- Kampania: Raport Strategiczny → `#nowe-leady-raport`
+
+**Test panel:** `/dashboard/test/slack-lead-notifications` — lists recent entries from both campaigns, manual send button, Slack connection test, webhook registration/deletion UI.
+
+---
 
 ## External Services
 
-- **Attio CRM** — schema in `docs/attio-crm-map.md`
-- **CloudTalk** — call center, recordings, webhooks. Basic auth (API_ID:API_KEY)
-- **OpenRouter** — AI gateway, OpenAI-compatible. Transcription via multimodal models
+- **Attio CRM** — primary CRM. Schema in `docs/attio-crm-map.md`. Objects: People, Deals, Companies. Notes API (markdown). Webhook API for list-entry events. Auth: Bearer token.
+- **CloudTalk** — call center. Recordings, call history. Auth: HTTP Basic (API_ID:API_KEY). API base: `https://my.cloudtalk.io/api`. No direct call ID lookup — batch fetch + filter.
+- **OpenRouter** — AI gateway, OpenAI-compatible. Multimodal models for audio transcription. Model configurable via `OPENROUTER_MODEL` env var (default: `google/gemini-2.5-flash-lite`). 120s timeout for audio processing.
+- **Slack** — notifications via Bot token. Block Kit formatting. Auth: Bearer token (`xoxb-...`).
+
+## Shared Library (`src/lib/`)
+
+All API clients use `fetchWithTimeout()` from `src/lib/fetch.ts` (30s default, 120s for OpenRouter).
+
+**Attio** (`attio.ts`): `findPersonByPhone`, `findPersonByEmail`, `getPersonDetails`, `getDealDetails`, `pickBestDeal`, `createNote`, `queryListEntries`, `registerWebhook`, `listWebhooks`, `deleteWebhook`, plus helper extractors (`getPersonName`, `getPersonEmail`, `getPersonPhone`, `getDealName`, `getDealStage`).
+
+**CloudTalk** (`cloudtalk.ts`): `getCallDetails` (batch fetch + find by ID), `getRecentCalls` (paginated), `getCallsSince` (date filter for poller), `downloadRecording` (WAV buffer).
+
+**OpenRouter** (`openrouter.ts`): `transcribeAudio`, `summarizeTranscript`, `transcribeAndSummarize` (single-pass audio → transcript + summary). Polish-language system prompts.
+
+**Slack** (`slack.ts`): `postMessage` (Block Kit blocks), `testConnection`.
+
+**Logger** (`logger.ts`): `createLogger(name)` — child Pino logger per integration.
 
 ## Secrets
 
 `.env` file (git-ignored). On VPS, created manually. Keep `.env.example` updated.
 
+Required: `ATTIO_API_KEY`, `CLOUDTALK_API_ID`, `CLOUDTALK_API_KEY`, `OPENROUTER_API_KEY`
+Optional: `SLACK_BOT_TOKEN`, `DASHBOARD_PASSWORD`, `DASHBOARD_SECRET`, `ATTIO_WEBHOOK_SECRET`, `WEBHOOK_SECRET`, `OPENROUTER_MODEL`, `PORT`, `NODE_ENV`
+
+New env vars that are needed by active integrations should use `requireEnv()`. Optional vars (features that degrade gracefully) should use `process.env.X || ''`.
+
 ## Deployment
 
 VPS: `187.127.88.41` / `custom-integration-hub.velocy.co`
 
+**Auto-deploy:** `deploy/autodeploy.sh` polls GitHub `main` branch every 30s. On new commits: `git pull → npm install → npm run build → pm2 restart`. Managed by PM2 as `autodeploy` process.
+
+**Manual deploy:**
 ```bash
 # On VPS:
-git pull origin dev
+cd /home/srv/custom-integration-hub
+git pull origin main
 npm install && npm run build
 pm2 restart custom-integration-hub
 ```
 
+**Restart without rebuild** (e.g., after .env change):
+```bash
+pm2 restart custom-integration-hub
+```
+
+**PM2 processes:**
+- `custom-integration-hub` — the Express server (cluster mode)
+- `autodeploy` — GitHub polling script (fork mode)
+
 PM2 config: `ecosystem.config.cjs`
-Nginx config: `deploy/nginx.conf`
+Nginx config: `deploy/nginx.conf` (reverse proxy port 80 → 3100, SSL via certbot)
 
 ---
 
-## How Integrations Work — Complete Guide
-
-This section explains the architecture so every Claude Code instance builds integrations consistently.
-
-### Core Concept
-
-The server is a single Express app that hosts many independent automations. Each automation is called an **integration**. Integrations are self-contained modules that receive triggers (webhooks, cron) and perform actions (API calls to CRM, AI processing, etc.).
-
-The system has three layers:
-1. **Server layer** (`server.ts`) — Express app, middleware, health endpoint, dynamic route mounting
-2. **Shared library** (`src/lib/`) — Reusable API clients and utilities shared across all integrations
-3. **Integration modules** (`src/integrations/[name]/`) — Self-contained business logic per automation
-
-### How the Server Boots
-
-```
-server.ts bootstrap():
-  1. loadRegistry()           → reads integrations.json into memory
-  2. mount /dashboard         → admin panel (SSR HTML, password-protected)
-  3. mount /health            → public JSON status endpoint
-  4. for each integration where status === "active":
-       dynamic import(entry.module)
-       app.use(entry.path, mod.router)
-  5. mount global error handler
-  6. app.listen(3100)
-```
-
-Only integrations with `status: "active"` get their routes mounted. Changing status requires editing `integrations.json` and restarting the server.
-
-### Integration Module Contract
-
-Every integration MUST follow this structure:
-
-```
-src/integrations/[name]/
-  index.ts      — MUST export { router } (Express Router)
-  routes.ts     — Express Router with endpoint definitions
-  handler.ts    — Business logic (the "pipeline")
-  types.ts      — TypeScript interfaces for payloads/data
-```
-
-**`index.ts`** — Always exactly this:
-```typescript
-export { router } from './routes.js';
-```
-
-**`routes.ts`** — Define endpoints relative to the integration path:
-```typescript
-import { Router } from 'express';
-import { webhookHandler } from './handler.js';
-
-const router = Router();
-router.post('/webhook', webhookHandler);     // becomes /[integration-name]/webhook
-export { router };
-```
-
-**`handler.ts`** — The core pipeline. Pattern for webhook integrations:
-```typescript
-import type { Request, Response } from 'express';
-import { createLogger } from '../../lib/logger.js';
-
-const log = createLogger('my-integration');
-
-export async function webhookHandler(req: Request, res: Response): Promise<void> {
-  // 1. Respond immediately (prevent webhook retries)
-  res.status(200).json({ status: 'accepted' });
-
-  // 2. Process asynchronously
-  processPayload(req.body).catch(err => {
-    log.error({ err, payload: req.body }, 'Processing failed');
-  });
-}
-
-async function processPayload(payload: MyPayload): Promise<void> {
-  // Business logic here — API calls, data transformation, etc.
-}
-```
-
-**`types.ts`** — Define interfaces for all external data:
-```typescript
-export interface MyWebhookPayload {
-  id?: string;
-  // ... fields from external service
-  [key: string]: unknown;   // allow extra fields
-}
-```
-
-### Registry Entry Format
-
-When adding a new integration, add an entry to `integrations.json`:
-
-```json
-{
-  "id": "my-integration",
-  "name": "Human-readable name",
-  "description": "What this integration does in one sentence",
-  "status": "development",
-  "type": "webhook",
-  "path": "/my-integration",
-  "module": "./src/integrations/my-integration/index.js",
-  "triggers": ["Source: Event that starts this"],
-  "targets": ["Destination: What gets created/updated"],
-  "addedAt": "2026-05-21"
-}
-```
-
-Fields:
-- **id**: kebab-case unique identifier, matches folder name
-- **name**: shown in dashboard, can include emoji arrows like `Source → Action`
-- **description**: one sentence, shown in dashboard
-- **status**: `"development"` while building, `"active"` when ready, `"inactive"` to disable
-- **type**: `"webhook"` (receives HTTP), `"cron"` (scheduled), or `"hybrid"` (both)
-- **path**: Express mount path, always `"/[id]"`
-- **module**: path to compiled entry point, always `"./src/integrations/[id]/index.js"`
-- **triggers**: array of strings describing what starts this integration
-- **targets**: array of strings describing what gets modified
-
-### Shared Library (`src/lib/`)
-
-API clients are shared across integrations. Use them instead of making raw fetch calls.
-
-**Attio CRM** (`src/lib/attio.ts`):
-- `findPersonByPhone(phone)` — searches with 3 phone format variants (E.164, no +, last 9 digits)
-- `findPersonByEmail(email)` — email lookup
-- `getDealDetails(recordId)` — fetch single deal
-- `pickBestDeal(person)` — selects most relevant deal (active > closed, newest first)
-- `createNote({ parentObject, parentRecordId, title, content })` — creates markdown note
-- `getPersonName(person)`, `getDealName(deal)`, `getDealStage(deal)` — helper extractors
-
-**CloudTalk** (`src/lib/cloudtalk.ts`):
-- `getCallDetails(callId)` — full call metadata
-- `getRecentCalls(limit)` — list recent calls
-- `downloadRecording(callId)` — returns Buffer (WAV audio) or null
-
-**OpenRouter** (`src/lib/openrouter.ts`):
-- `transcribeAudio(audioBuffer)` — audio → text via Gemini multimodal
-- `summarizeTranscript(transcript, callMeta)` — text → Polish summary
-- `transcribeAndSummarize(audioBuffer, callMeta)` — single-pass: audio → transcript + summary
-
-**Logger** (`src/lib/logger.ts`):
-- `logger` — root Pino logger
-- `createLogger(name)` — creates child logger with `{ integration: name }`
-
-Every integration should use `createLogger('integration-name')` for structured logging.
-
-### Patterns to Follow
+## Patterns to Follow
 
 **Webhook handlers respond immediately, process async:**
 ```typescript
 res.status(200).json({ status: 'accepted' });
 process(payload).catch(err => log.error({ err }, 'fail'));
 ```
-This prevents the external service from retrying while we're still processing.
 
 **Idempotency for webhooks:**
-External services may send duplicate webhooks. Use an in-memory Map with TTL:
-```typescript
-const processed = new Map<string, number>();
-// Check before processing, set after accepting, cleanup on interval
-```
+In-memory Map with TTL. Check before processing, mark immediately, cleanup on interval with `.unref()`.
 
 **Attio notes always on Person AND Deal:**
-When creating notes that relate to a deal, create TWO notes:
-1. Person note — title includes deal name for cross-deal context: `"Action — {Deal Name} — {YYYY-MM-DD}"`
-2. Deal note — title without deal name (redundant in deal context): `"Action — {YYYY-MM-DD}"`
-
-If no deal is found, create only the Person note.
+Person note title: `"Action — {Deal Name} — {YYYY-MM-DD}"`. Deal note title: `"Action — {YYYY-MM-DD}"`. If no deal, Person only.
 
 **Every integration must have a test panel:**
-Each integration must export a `processCallManual` (or equivalent `process[X]Manual`) function that runs the pipeline synchronously and returns a result object `{ success, error?, ...details }`. The dashboard has a test page at `/dashboard/test/[integration-id]` that lists source data (e.g., recent calls) and lets you manually trigger the pipeline on individual records. This allows testing without waiting for production webhooks. Never deploy an integration that can only be tested via the real trigger.
+Export `process[X]Manual()` returning `{ success, error?, ...details }`. Dashboard test page at `/dashboard/test/[id]` lists source data and allows manual triggering.
 
-**Error handling — log and continue, don't crash:**
-Integrations run in the same process. An unhandled exception kills everything. Always wrap async pipelines in try/catch and log errors. Never let a single webhook failure bring down the server.
+**Use fetchWithTimeout for all external API calls:**
+Import from `src/lib/fetch.ts`. Default 30s, use 120s for slow operations (AI audio processing).
+
+**Error handling — log and continue:**
+Wrap async pipelines in try/catch. Never let one integration crash the server. All intervals must use `.unref()`.
 
 **Use existing API clients:**
-Before making raw `fetch()` calls to Attio, CloudTalk, or OpenRouter, check if `src/lib/` already has the function you need. Add new functions to the existing client files rather than creating new ones.
+Check `src/lib/` before making raw fetch calls. Add new functions to existing client files.
 
 **New external service = new client in `src/lib/`:**
-If an integration needs a service that doesn't have a client yet (e.g., Calendly, Stripe), create `src/lib/calendly.ts` following the same pattern: config from `config.ts`, typed response interfaces, exported async functions, child logger.
+Follow the pattern: config from `config.ts`, typed interfaces, exported async functions, child logger.
 
-**Add new env vars to both `.env.example` and `config.ts`:**
-All secrets go in `.env` (git-ignored). The `config.ts` file validates them at startup with `requireEnv()` for required vars or `process.env.X || ''` for optional ones. Update `.env.example` with placeholder values.
+**New env vars in both `.env.example` and `config.ts`.**
 
-### Step-by-Step: Building a New Integration
+## CRM Reference
 
-1. **Understand the trigger**: What starts this automation? Webhook from external service? Cron schedule? Manual trigger?
-
-2. **Understand the action**: What should happen? Create CRM records? Send messages? Process data?
-
-3. **Check existing clients**: Does `src/lib/` already have the API client needed? If not, create one.
-
-4. **Create the module**:
-   ```bash
-   mkdir -p src/integrations/my-integration
-   ```
-   Create `index.ts`, `routes.ts`, `handler.ts`, `types.ts`.
-
-5. **Register in `integrations.json`** with `status: "development"`.
-
-6. **Implement handler.ts** — the pipeline. Follow the respond-immediately-process-async pattern for webhooks.
-
-7. **Add test panel** — Export a `process[X]Manual(id)` function from `handler.ts` that returns `{ success, error?, ...details }`. Add test routes in `src/dashboard.ts` under `/dashboard/test/[integration-id]` that list source data and allow manual triggering.
-
-8. **Test locally**: `npm run dev` → go to `/dashboard/test/[integration-id]` → trigger manually on real data and verify results.
-
-9. **Set status to `"active"`** in `integrations.json`.
-
-10. **Type-check and build**: `npm run typecheck && npm run build`
-
-11. **Deploy**: Commit to `dev`, push, on VPS: `git pull && npm install && npm run build && pm2 restart custom-integration-hub`.
-
-12. **Configure the trigger**: Set up the webhook URL or cron in the external service.
-
-### CRM Reference
-
-See `docs/attio-crm-map.md` for the complete Attio CRM schema including:
-- All objects (People, Deals, Companies), their attributes and API slugs
-- List (pipeline) structures with stage statuses and IDs
-- Notes API format and examples
-- Relationship graph between objects
-- Key workspace/object/list IDs
+See `docs/attio-crm-map.md` for the complete Attio CRM schema including all objects, attributes, API slugs, list structures with stage statuses and IDs, Notes API format, relationship graph, and key IDs.
