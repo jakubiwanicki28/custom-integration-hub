@@ -287,9 +287,10 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', asyn
       return;
     }
 
-    const envPrefix = getAllOrganizations().find(o => o.id === orgId)?.envPrefix ?? orgId.toUpperCase();
-    const msg = `ok:Webhook zarejestrowany! Secret: ${result.secret} — dodaj jako ${envPrefix}_ATTIO_WEBHOOK_SECRET do .env`;
-    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+    // Store secret in runtime context — no manual .env editing needed
+    mounted.ctx.org.webhookSecret = result.secret;
+
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('ok:Webhook zarejestrowany!'));
   } catch (err) {
     log.error({ err, path: req.path }, 'Dashboard route error');
     res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
