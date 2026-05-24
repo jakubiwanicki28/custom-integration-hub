@@ -38,7 +38,13 @@
                 "statusSlug": "status_kampania_akademia_biznesu",
                 "konsultacjaStageId": "0aec4a2f-7253-4e1d-a13a-d21db4707a1a"
               }
-            }
+            },
+            "allowedOrigins": [
+              "https://akademiabiznesu.vercel.app",
+              "https://lp-2-akademia-biznesu.vercel.app",
+              "http://localhost:3000",
+              "http://localhost:3001"
+            ]
           }
         },
         {

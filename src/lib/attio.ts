@@ -304,22 +304,33 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
   // --- Lead intake methods ---
 
   async function upsertPerson(data: { email: string; firstName: string; lastName: string; phone: string }): Promise<string | null> {
-    const body = {
-      data: {
-        values: {
-          email_addresses: [{ email_address: data.email }],
-          name: [{ first_name: data.firstName, last_name: data.lastName, full_name: `${data.firstName} ${data.lastName}`.trim() }],
-          phone_numbers: [{ original_phone_number: data.phone }],
-        },
-      },
+    const values: Record<string, unknown> = {
+      email_addresses: [{ email_address: data.email }],
+      name: [{ first_name: data.firstName, last_name: data.lastName, full_name: `${data.firstName} ${data.lastName}`.trim() }],
     };
+    if (data.phone) {
+      values.phone_numbers = [{ original_phone_number: data.phone }];
+    }
 
     const res = await fetchWithTimeout(`${BASE_URL}/objects/people/records?matching_attribute=email_addresses`, {
-      method: 'PUT', headers, body: JSON.stringify(body),
+      method: 'PUT', headers, body: JSON.stringify({ data: { values } }),
     });
 
     if (!res.ok) {
       const errorBody = await safeText(res);
+      // Retry without phone if Attio rejects it
+      if (res.status === 400 && errorBody.includes('phone_number') && data.phone) {
+        log.warn({ email: data.email, phone: data.phone }, 'Phone rejected by Attio, retrying without phone');
+        delete values.phone_numbers;
+        const retry = await fetchWithTimeout(`${BASE_URL}/objects/people/records?matching_attribute=email_addresses`, {
+          method: 'PUT', headers, body: JSON.stringify({ data: { values } }),
+        });
+        if (retry.ok) {
+          const result = await safeJson<{ data: AttioPerson }>(retry);
+          log.info({ recordId: result.data.id.record_id, email: data.email }, 'Person upserted (without phone)');
+          return result.data.id.record_id;
+        }
+      }
       log.error({ status: res.status, email: data.email, errorBody }, 'Failed to upsert person');
       return null;
     }

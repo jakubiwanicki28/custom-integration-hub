@@ -160,5 +160,29 @@ export function createHandler(ctx: OrgContext) {
     }
   }
 
-  return { webhookHandler, processManual, campaignLists };
+  // --- LP frontend notification (replaces Calendly webhook for free plan) ---
+
+  async function notifyHandler(req: Request, res: Response): Promise<void> {
+    const { email } = req.body as { email?: string };
+    if (!email) {
+      res.status(400).json({ ok: false, error: 'Missing email' });
+      return;
+    }
+
+    res.status(200).json({ ok: true });
+
+    const key = `notify:${email}`;
+    if (processedEvents.has(key)) {
+      log.info({ key }, 'Booking notification already processed, skipping');
+      return;
+    }
+    processedEvents.set(key, Date.now());
+
+    syncBooking(email, new Date().toISOString()).catch(err => {
+      processedEvents.delete(key);
+      log.error({ err, email }, 'Unhandled error in booking notify sync');
+    });
+  }
+
+  return { webhookHandler, notifyHandler, processManual, campaignLists };
 }

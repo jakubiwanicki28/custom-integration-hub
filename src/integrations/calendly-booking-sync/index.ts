@@ -4,7 +4,8 @@ import { createRouter } from './routes.js';
 
 export function createIntegration(ctx: OrgContext): IntegrationInstance {
   const handler = createHandler(ctx);
-  const router = createRouter(handler);
+  const allowedOrigins = (ctx.integrationConfig.allowedOrigins ?? []) as string[];
+  const router = createRouter(handler, allowedOrigins);
 
   return {
     router,
