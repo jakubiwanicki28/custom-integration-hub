@@ -297,6 +297,11 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', asyn
   }
 });
 
+// GET /test/:orgId/lead-intake — no test panel, redirect back
+dashboardRouter.get('/test/:orgId/lead-intake', (req: Request, res: Response) => {
+  res.redirect('/dashboard?org=' + encodeURIComponent(param(req, 'orgId')));
+});
+
 // GET /test/:orgId/calendly-booking-sync
 dashboardRouter.get('/test/:orgId/calendly-booking-sync', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }

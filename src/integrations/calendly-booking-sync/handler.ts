@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response } from 'express';
 import type { OrgContext } from '../../lib/org-context.js';
+import { fetchWithTimeout, safeJson } from '../../lib/fetch.js';
 import { getDealName, getAssociatedDealIds } from '../../lib/attio.js';
 import type { CalendlyWebhookPayload, CampaignListConfig, BookingSyncResult } from './types.js';
 
@@ -10,6 +11,8 @@ export function createHandler(ctx: OrgContext) {
   const attio = ctx.clients.attio;
   const log = ctx.log.child({ integration: 'calendly-booking-sync' });
   const webhookSecret = process.env[`${ctx.org.envPrefix}_CALENDLY_WEBHOOK_SECRET`] || '';
+  const calendlyToken = process.env[`${ctx.org.envPrefix}_CALENDLY_API_TOKEN`] || '';
+  const calendlyUserUri = ctx.integrationConfig.calendlyUserUri as string | undefined;
 
   const campaignLists = (ctx.integrationConfig.campaignLists ?? {}) as Record<string, CampaignListConfig>;
 
@@ -40,6 +43,47 @@ export function createHandler(ctx: OrgContext) {
 
     if (signature.length !== expected.length) return false;
     return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  }
+
+  // --- Calendly API lookup ---
+
+  async function getCalendlyBookingTime(email: string): Promise<string | null> {
+    if (!calendlyToken || !calendlyUserUri) {
+      log.warn('Calendly API token or user URI not configured — cannot fetch booking time');
+      return null;
+    }
+
+    const url = new URL('https://api.calendly.com/scheduled_events');
+    url.searchParams.set('user', calendlyUserUri);
+    url.searchParams.set('invitee_email', email);
+    url.searchParams.set('status', 'active');
+    url.searchParams.set('sort', 'start_time:desc');
+    url.searchParams.set('count', '1');
+
+    try {
+      const res = await fetchWithTimeout(url.toString(), {
+        headers: { Authorization: `Bearer ${calendlyToken}` },
+      });
+
+      if (!res.ok) {
+        log.error({ status: res.status, email }, 'Calendly API error');
+        return null;
+      }
+
+      const data = await safeJson<{ collection: Array<{ start_time: string }> }>(res);
+      const startTime = data.collection?.[0]?.start_time;
+
+      if (startTime) {
+        log.info({ email, startTime }, 'Calendly booking time found');
+      } else {
+        log.warn({ email }, 'No active Calendly booking found for email');
+      }
+
+      return startTime ?? null;
+    } catch (err) {
+      log.error({ err, email }, 'Failed to query Calendly API');
+      return null;
+    }
   }
 
   // --- Core pipeline ---
@@ -152,7 +196,8 @@ export function createHandler(ctx: OrgContext) {
 
   async function processManual(email: string): Promise<BookingSyncResult> {
     try {
-      return await syncBooking(email, new Date().toISOString());
+      const startTime = await getCalendlyBookingTime(email) || new Date().toISOString();
+      return await syncBooking(email, startTime);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       log.error({ err, email }, 'Manual booking sync failed');
@@ -178,7 +223,9 @@ export function createHandler(ctx: OrgContext) {
     }
     processedEvents.set(key, Date.now());
 
-    syncBooking(email, new Date().toISOString()).catch(err => {
+    getCalendlyBookingTime(email).then(startTime => {
+      return syncBooking(email, startTime || new Date().toISOString());
+    }).catch(err => {
       processedEvents.delete(key);
       log.error({ err, email }, 'Unhandled error in booking notify sync');
     });
