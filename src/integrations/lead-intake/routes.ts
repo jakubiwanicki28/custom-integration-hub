@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import type { Logger } from 'pino';
 import type { LeadIntakeResponse } from './types.js';
 
 // --- Rate limiter (IP-based) ---
@@ -33,6 +34,7 @@ export function createRouter(
     processLead: (data: import('./types.js').LeadIntakeRequest) => Promise<LeadIntakeResponse>;
   },
   allowedOrigins: string[],
+  log: Logger,
 ): Router {
   const router = Router();
 
@@ -71,6 +73,7 @@ export function createRouter(
       const result = await handler.processLead(validation.data);
       res.status(result.ok ? 200 : 500).json(result);
     } catch (err) {
+      log.error({ err }, 'Lead intake request error');
       res.status(500).json({ ok: false, error: 'Internal server error' });
     }
   });

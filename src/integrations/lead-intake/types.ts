@@ -1,14 +1,3 @@
-/** Raw input from LP frontend (before validation) */
-export interface LeadIntakeInput {
-  firstName?: string;
-  lastName?: string;
-  fullName?: string;
-  email?: string;
-  phone?: string;
-  campaign?: string;
-}
-
-/** Validated lead data (after validation) */
 export interface LeadIntakeRequest {
   firstName: string;
   lastName: string;
@@ -27,4 +16,5 @@ export interface CampaignConfig {
   listStatusSlug: string;
   initialStageId: string;
   dealPrefix: string;
+  brevoListId: number;
 }

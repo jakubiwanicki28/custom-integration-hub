@@ -355,6 +355,7 @@ interface LeadEntry {
   listName: string;
   dealName: string;
   personName: string;
+  email: string | null;
   stage: string;
   createdAt: string;
 }
@@ -372,12 +373,16 @@ async function enrichListEntries(attio: import('./lib/org-context.js').AttioClie
     const associatedPeople = deal.values.associated_people as Array<{ target_record_id: string }> | undefined;
     const firstPersonId = associatedPeople?.[0]?.target_record_id;
     let personName = 'Brak osoby';
+    let email: string | null = null;
     if (firstPersonId) {
       const person = await attio.getPersonDetails(firstPersonId);
-      if (person) personName = getPersonName(person);
+      if (person) {
+        personName = getPersonName(person);
+        email = getPersonEmail(person);
+      }
     }
 
-    enriched.push({ dealRecordId: entry.parent_record_id, listId, listName, dealName, personName, stage, createdAt: entry.created_at });
+    enriched.push({ dealRecordId: entry.parent_record_id, listId, listName, dealName, personName, email, stage, createdAt: entry.created_at });
   }));
 
   enriched.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -704,17 +709,20 @@ function renderCalendlySyncPanel(
 
   const groupHtml = entryGroups.map(g => {
     const entryRows = g.entries.length === 0
-      ? '<tr><td colspan="5" style="text-align:center;color:#484f58;padding:20px">Brak wpisów</td></tr>'
+      ? '<tr><td colspan="6" style="text-align:center;color:#484f58;padding:20px">Brak wpisów</td></tr>'
       : g.entries.map(e => {
         const date = new Date(e.createdAt);
         const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
-        return `<tr><td>${dateStr}</td><td>${escapeHtml(e.dealName)}</td><td>${escapeHtml(e.personName)}</td><td>${escapeHtml(e.stage)}</td>
-        <td><form method="POST" action="${basePath}/sync" style="display:inline"><input type="hidden" name="email" value="${escapeHtml(e.dealName)}"><button type="submit" class="btn-process" disabled title="Potrzebny email — użyj ręcznie">Sync</button></form></td></tr>`;
+        const emailVal = e.email ?? '';
+        return `<tr><td>${dateStr}</td><td>${escapeHtml(e.dealName)}</td><td>${escapeHtml(e.personName)}</td><td>${emailVal ? escapeHtml(emailVal) : '<span style="color:#484f58">brak</span>'}</td><td>${escapeHtml(e.stage)}</td>
+        <td>${emailVal
+          ? `<form method="POST" action="${basePath}/sync" style="display:inline"><input type="hidden" name="email" value="${escapeHtml(emailVal)}"><button type="submit" class="btn-process">Sync</button></form>`
+          : ''}</td></tr>`;
       }).join('');
 
     return `<div class="section-card">
       <div class="section-title">Kampania: ${escapeHtml(g.listName)}</div>
-      <table><thead><tr><th>Data</th><th>Deal</th><th>Osoba</th><th>Etap</th><th></th></tr></thead><tbody>${entryRows}</tbody></table>
+      <table><thead><tr><th>Data</th><th>Deal</th><th>Osoba</th><th>Email</th><th>Etap</th><th></th></tr></thead><tbody>${entryRows}</tbody></table>
     </div>`;
   }).join('');
 

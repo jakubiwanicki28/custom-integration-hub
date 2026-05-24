@@ -61,22 +61,24 @@ export function createHandler(ctx: OrgContext) {
 
     let synced = 0;
 
-    // 3. For each campaign list, find matching entries and update
+    // 3. Update deals and campaign list entries
+    const updatedDeals = new Set<string>();
+
     for (const [listId, config] of Object.entries(campaignLists)) {
       for (const dealId of dealIds) {
         const entries = await attio.findListEntriesByDeal(listId, dealId);
         if (entries.length === 0) continue;
 
+        // Update deal once (not per entry)
+        if (!updatedDeals.has(dealId)) {
+          await attio.updateDealValues(dealId, { data_konsultacji: startTime });
+          updatedDeals.add(dealId);
+        }
+
         const deal = await attio.getDealDetails(dealId);
         const dealName = deal ? getDealName(deal) : dealId;
 
         for (const entry of entries) {
-          // Update deal with consultation date
-          await attio.updateDealValues(dealId, {
-            data_konsultacji: startTime,
-          });
-
-          // Update list entry status to "Konsultacja umówiona"
           await attio.updateListEntry(listId, entry.id.entry_id, {
             [config.statusSlug]: [{ status: config.konsultacjaStageId }],
             data_konsultacji: startTime,
@@ -127,6 +129,11 @@ export function createHandler(ctx: OrgContext) {
       return;
     }
 
+    if (!startTime) {
+      log.warn({ email }, 'Missing start_time in Calendly webhook — skipping');
+      return;
+    }
+
     // Idempotency
     const key = `${email}:${startTime}`;
     if (processedEvents.has(key)) {
@@ -135,7 +142,7 @@ export function createHandler(ctx: OrgContext) {
     }
     processedEvents.set(key, Date.now());
 
-    syncBooking(email, startTime || '').catch(err => {
+    syncBooking(email, startTime).catch(err => {
       processedEvents.delete(key);
       log.error({ err, email }, 'Unhandled error in booking sync');
     });

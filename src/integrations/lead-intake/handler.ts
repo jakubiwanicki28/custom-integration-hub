@@ -10,7 +10,6 @@ export function createHandler(ctx: OrgContext) {
   const dealOwnerId = ctx.integrationConfig.dealOwnerId as string;
   const dealStageLeadId = ctx.integrationConfig.dealStageLeadId as string;
   const brevoApiKey = process.env[`${ctx.org.envPrefix}_BREVO_API_KEY`] || '';
-  const brevoListId = Number(process.env[`${ctx.org.envPrefix}_BREVO_LIST_ID`]) || 3;
 
   // --- Input validation ---
 
@@ -55,7 +54,7 @@ export function createHandler(ctx: OrgContext) {
 
   // --- Brevo helper (fire-and-forget) ---
 
-  async function sendToBrevo(data: LeadIntakeRequest): Promise<void> {
+  async function sendToBrevo(data: LeadIntakeRequest, listId: number): Promise<void> {
     if (!brevoApiKey) {
       log.warn('Brevo API key not configured, skipping');
       return;
@@ -63,7 +62,7 @@ export function createHandler(ctx: OrgContext) {
 
     const body = {
       email: data.email,
-      listIds: [brevoListId],
+      listIds: [listId],
       updateEnabled: true,
       attributes: {
         FIRSTNAME: data.firstName,
@@ -136,7 +135,7 @@ export function createHandler(ctx: OrgContext) {
     }
 
     // 4. Brevo (fire-and-forget)
-    sendToBrevo(data).catch(err => log.error({ err }, 'Brevo fire-and-forget error'));
+    sendToBrevo(data, campaignConfig.brevoListId).catch(err => log.error({ err }, 'Brevo fire-and-forget error'));
 
     log.info({ personId, dealId, entryId, campaign: data.campaign, email: data.email }, 'Lead processed');
     return { ok: true };

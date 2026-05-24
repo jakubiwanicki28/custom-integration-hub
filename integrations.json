@@ -19,8 +19,7 @@
       "requiredServices": ["attio", "slack"],
       "triggers": ["Attio: list-entry.created webhook"],
       "targets": ["Slack: notification"]
-    }
-    ,
+    },
     {
       "id": "calendly-booking-sync",
       "name": "Calendly → Attio: Booking sync",
