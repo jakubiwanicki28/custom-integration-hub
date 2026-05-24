@@ -297,6 +297,56 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', asyn
   }
 });
 
+// GET /test/:orgId/calendly-booking-sync
+dashboardRouter.get('/test/:orgId/calendly-booking-sync', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'calendly-booking-sync');
+  if (!mounted) { res.redirect('/dashboard?org=' + orgId); return; }
+
+  const result = req.query.result as string | undefined;
+  const attio = mounted.ctx.clients.attio;
+  const campaignLists = (mounted.instance.handlers.campaignLists ?? {}) as Record<string, { listName: string; statusSlug: string }>;
+
+  let entryGroups: Array<{ listId: string; listName: string; entries: LeadEntry[] }> = [];
+  let loadError = '';
+
+  try {
+    const enrichPromises = Object.entries(campaignLists).map(async ([listId, config]) => {
+      const entries = await enrichListEntries(attio, listId, config.listName);
+      return { listId, listName: config.listName, entries };
+    });
+    entryGroups = await Promise.all(enrichPromises);
+  } catch (err) {
+    loadError = err instanceof Error ? err.message : 'Błąd ładowania danych';
+  }
+
+  res.send(renderCalendlySyncPanel(orgId, entryGroups, result, loadError));
+});
+
+// POST /test/:orgId/calendly-booking-sync/sync
+dashboardRouter.post('/test/:orgId/calendly-booking-sync/sync', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'calendly-booking-sync');
+  const redirectBase = `/dashboard/test/${orgId}/calendly-booking-sync`;
+
+  try {
+    const email = req.body?.email;
+    if (!email) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Brak email')); return; }
+    if (!mounted?.instance.handlers.processManual) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana')); return; }
+
+    const syncResult = await mounted.instance.handlers.processManual(email) as { success: boolean; email?: string; error?: string };
+    const msg = syncResult.success
+      ? `ok:Sync OK dla ${syncResult.email ?? email}`
+      : `error:${syncResult.error ?? 'Nieznany błąd'}`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+  }
+});
+
 // --- Helpers ---
 
 interface LeadEntry {
@@ -638,4 +688,50 @@ function renderSlackLeadPanel(
   </div>`;
 
   return pageShell('Slack Lead Notifications', body);
+}
+
+function renderCalendlySyncPanel(
+  orgId: string,
+  entryGroups: Array<{ listId: string; listName: string; entries: LeadEntry[] }>,
+  resultParam?: string,
+  loadError?: string,
+): string {
+  const safeOrgId = encodeURIComponent(orgId);
+  const basePath = `/dashboard/test/${safeOrgId}/calendly-booking-sync`;
+
+  let flashHtml = renderFlash(resultParam);
+  if (loadError) flashHtml += `<div class="flash flash-error">Błąd ładowania: ${escapeHtml(loadError)}</div>`;
+
+  const groupHtml = entryGroups.map(g => {
+    const entryRows = g.entries.length === 0
+      ? '<tr><td colspan="5" style="text-align:center;color:#484f58;padding:20px">Brak wpisów</td></tr>'
+      : g.entries.map(e => {
+        const date = new Date(e.createdAt);
+        const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+        return `<tr><td>${dateStr}</td><td>${escapeHtml(e.dealName)}</td><td>${escapeHtml(e.personName)}</td><td>${escapeHtml(e.stage)}</td>
+        <td><form method="POST" action="${basePath}/sync" style="display:inline"><input type="hidden" name="email" value="${escapeHtml(e.dealName)}"><button type="submit" class="btn-process" disabled title="Potrzebny email — użyj ręcznie">Sync</button></form></td></tr>`;
+      }).join('');
+
+    return `<div class="section-card">
+      <div class="section-title">Kampania: ${escapeHtml(g.listName)}</div>
+      <table><thead><tr><th>Data</th><th>Deal</th><th>Osoba</th><th>Etap</th><th></th></tr></thead><tbody>${entryRows}</tbody></table>
+    </div>`;
+  }).join('');
+
+  const body = `
+  <div class="container">
+    <header><div><a href="/dashboard?org=${safeOrgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">Calendly Booking Sync</h1></div></header>
+    ${flashHtml}
+    <div class="section-card">
+      <div class="section-title">Ręczny sync po emailu</div>
+      <form method="POST" action="${basePath}/sync" style="display:flex;gap:8px;align-items:center">
+        <input type="email" name="email" placeholder="Email leada" required style="flex:1;padding:8px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:14px">
+        <button type="submit" class="btn-action">Synchronizuj</button>
+      </form>
+    </div>
+    ${groupHtml}
+    <footer>custom-integration-hub.velocy.co</footer>
+  </div>`;
+
+  return pageShell('Calendly Booking Sync', body);
 }
