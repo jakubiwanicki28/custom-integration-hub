@@ -166,6 +166,7 @@ export function createHandler(ctx: OrgContext) {
     }
 
     const payload = req.body as AttioWebhookPayload;
+    log.info({ eventType: payload.event_type, bodyKeys: Object.keys(req.body), body: JSON.stringify(req.body).slice(0, 500) }, 'Webhook payload received');
     res.status(200).json({ status: 'accepted' });
 
     if (payload.event_type !== 'list-entry.created') {
