@@ -14,6 +14,14 @@ export interface AttioClient {
   registerWebhook(targetUrl: string, subscriptions: Array<{ event_type: string; filter?: unknown }>): Promise<{ webhookId: string; secret: string } | null>;
   listWebhooks(): Promise<import('./attio.js').AttioWebhook[]>;
   deleteWebhook(webhookId: string): Promise<boolean>;
+  // Lead intake methods
+  upsertPerson(data: { email: string; firstName: string; lastName: string; phone: string }): Promise<string | null>;
+  createDeal(data: { name: string; stageId: string; ownerId: string; personRecordId: string }): Promise<string | null>;
+  addListEntry(listId: string, dealRecordId: string, entryValues: Record<string, unknown>): Promise<string | null>;
+  // Booking sync methods
+  updateDealValues(dealRecordId: string, values: Record<string, unknown>): Promise<boolean>;
+  updateListEntry(listId: string, entryId: string, entryValues: Record<string, unknown>): Promise<boolean>;
+  findListEntriesByDeal(listId: string, dealRecordId: string): Promise<import('./attio.js').AttioListEntry[]>;
 }
 
 export interface SlackClient {

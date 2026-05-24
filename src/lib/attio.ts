@@ -301,8 +301,139 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     return true;
   }
 
+  // --- Lead intake methods ---
+
+  async function upsertPerson(data: { email: string; firstName: string; lastName: string; phone: string }): Promise<string | null> {
+    const body = {
+      data: {
+        values: {
+          email_addresses: [{ email_address: data.email }],
+          name: [{ first_name: data.firstName, last_name: data.lastName, full_name: `${data.firstName} ${data.lastName}`.trim() }],
+          phone_numbers: [{ original_phone_number: data.phone }],
+        },
+      },
+    };
+
+    const res = await fetchWithTimeout(`${BASE_URL}/objects/people/records?matching_attribute=email_addresses`, {
+      method: 'PUT', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errorBody = await safeText(res);
+      log.error({ status: res.status, email: data.email, errorBody }, 'Failed to upsert person');
+      return null;
+    }
+
+    const result = await safeJson<{ data: AttioPerson }>(res);
+    log.info({ recordId: result.data.id.record_id, email: data.email }, 'Person upserted');
+    return result.data.id.record_id;
+  }
+
+  async function createDealRecord(data: { name: string; stageId: string; ownerId: string; personRecordId: string }): Promise<string | null> {
+    const body = {
+      data: {
+        values: {
+          name: [{ value: data.name }],
+          stage: [{ status: data.stageId }],
+          owner: [{ referenced_actor_type: 'workspace-member', referenced_actor_id: data.ownerId }],
+          associated_people: [{ target_object: 'people', target_record_id: data.personRecordId }],
+        },
+      },
+    };
+
+    const res = await fetchWithTimeout(`${BASE_URL}/objects/deals/records`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errorBody = await safeText(res);
+      log.error({ status: res.status, dealName: data.name, errorBody }, 'Failed to create deal');
+      return null;
+    }
+
+    const result = await safeJson<{ data: AttioDeal }>(res);
+    log.info({ recordId: result.data.id.record_id, dealName: data.name }, 'Deal created');
+    return result.data.id.record_id;
+  }
+
+  async function addListEntry(listId: string, dealRecordId: string, entryValues: Record<string, unknown>): Promise<string | null> {
+    const body = {
+      data: {
+        parent_record_id: dealRecordId,
+        parent_object: 'deals',
+        entry_values: entryValues,
+      },
+    };
+
+    const res = await fetchWithTimeout(`${BASE_URL}/lists/${listId}/entries`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errorBody = await safeText(res);
+      log.error({ status: res.status, listId, dealRecordId, errorBody }, 'Failed to add list entry');
+      return null;
+    }
+
+    const result = await safeJson<{ data: AttioListEntry }>(res);
+    log.info({ entryId: result.data.id.entry_id, listId, dealRecordId }, 'List entry added');
+    return result.data.id.entry_id;
+  }
+
+  // --- Booking sync methods ---
+
+  async function updateDealValues(dealRecordId: string, values: Record<string, unknown>): Promise<boolean> {
+    const res = await fetchWithTimeout(`${BASE_URL}/objects/deals/records/${dealRecordId}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ data: { values } }),
+    });
+
+    if (!res.ok) {
+      const errorBody = await safeText(res);
+      log.error({ status: res.status, dealRecordId, errorBody }, 'Failed to update deal values');
+      return false;
+    }
+
+    log.info({ dealRecordId }, 'Deal values updated');
+    return true;
+  }
+
+  async function updateListEntry(listId: string, entryId: string, entryValues: Record<string, unknown>): Promise<boolean> {
+    const res = await fetchWithTimeout(`${BASE_URL}/lists/${listId}/entries/${entryId}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ data: { entry_values: entryValues } }),
+    });
+
+    if (!res.ok) {
+      const errorBody = await safeText(res);
+      log.error({ status: res.status, listId, entryId, errorBody }, 'Failed to update list entry');
+      return false;
+    }
+
+    log.info({ listId, entryId }, 'List entry updated');
+    return true;
+  }
+
+  async function findListEntriesByDeal(listId: string, dealRecordId: string): Promise<AttioListEntry[]> {
+    const body = {
+      filter: { parent_record: { target_record_id: { $eq: dealRecordId } } },
+    };
+
+    const res = await fetchWithTimeout(`${BASE_URL}/lists/${listId}/entries/query`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      log.error({ status: res.status, listId, dealRecordId }, 'Failed to find list entries by deal');
+      return [];
+    }
+
+    const data = await safeJson<AttioQueryResponse<AttioListEntry>>(res);
+    return data.data;
+  }
+
   return {
     findPersonByPhone, findPersonByEmail, getDealDetails, getPersonDetails,
     pickBestDeal, createNote, queryListEntries, registerWebhook, listWebhooks, deleteWebhook,
+    upsertPerson, createDeal: createDealRecord, addListEntry,
+    updateDealValues, updateListEntry, findListEntriesByDeal,
   };
 }
