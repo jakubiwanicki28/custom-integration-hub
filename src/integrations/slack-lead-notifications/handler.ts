@@ -154,6 +154,8 @@ export function createHandler(ctx: OrgContext) {
   // --- Express handler ---
 
   async function webhookHandler(req: Request, res: Response): Promise<void> {
+    log.info({ body: req.body, headers: { 'content-type': req.headers['content-type'], 'attio-signature': req.headers['attio-signature'] ? 'present' : 'absent' } }, 'Webhook received');
+
     if (webhookSecret) {
       const signature = (req.headers['attio-signature'] || req.headers['x-attio-signature']) as string | undefined;
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
@@ -176,6 +178,8 @@ export function createHandler(ctx: OrgContext) {
     const listId = payload.id?.list_id;
     const dealRecordId = payload.parent_record_id;
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+
+    log.info({ listId, dealRecordId, eventType: payload.event_type }, 'Webhook payload parsed');
 
     if (!listId || !dealRecordId) {
       log.error({ payload }, 'Missing list_id or parent_record_id in webhook payload');
