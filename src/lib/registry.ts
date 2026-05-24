@@ -107,7 +107,13 @@ export function getAllMountedIntegrations(): MountedIntegration[] {
 // --- Dynamic import ---
 
 export async function importIntegrationModule(entry: IntegrationCatalogEntry): Promise<{ createIntegration: (ctx: OrgContext) => IntegrationInstance }> {
-  const modulePath = resolve(process.cwd(), entry.module);
+  let modulePath = resolve(process.cwd(), entry.module);
+
+  // In production, compiled files are in dist/ not src/
+  if (process.env.NODE_ENV === 'production') {
+    modulePath = modulePath.replace('/src/', '/dist/');
+  }
+
   const mod = await import(modulePath);
   if (typeof mod.createIntegration !== 'function') {
     throw new Error(`Integration module ${entry.id} does not export createIntegration()`);
