@@ -27,6 +27,33 @@
               }
             }
           }
+        },
+        {
+          "integrationId": "lead-intake",
+          "status": "development",
+          "config": {
+            "campaigns": {
+              "akademia": {
+                "listId": "a87fbbdf-8cab-4630-a3cc-9f5756dc944a",
+                "listStatusSlug": "status_kampania_akademia_biznesu",
+                "initialStageId": "a03a299c-698b-4657-9fb5-a997906cb1ef",
+                "dealPrefix": "LP Akademia"
+              },
+              "raport": {
+                "listId": "2e7cb019-4c0e-45c9-8998-c58590a733ef",
+                "listStatusSlug": "kanban_kampania_raport_strategiczny",
+                "initialStageId": "270af996-b9aa-4fd1-8e7a-26e963c054fd",
+                "dealPrefix": "LP Raport"
+              }
+            },
+            "dealOwnerId": "f654b36b-8011-4e00-b4df-9e7fcae5f62e",
+            "dealStageLeadId": "2abf780a-98ed-47d2-9a83-3e9e31aa6762",
+            "allowedOrigins": [
+              "http://localhost:3000",
+              "http://localhost:3001",
+              "http://localhost:3002"
+            ]
+          }
         }
       ]
     },

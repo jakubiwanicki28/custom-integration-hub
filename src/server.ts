@@ -126,6 +126,7 @@ async function bootstrap() {
         org: {
           id: org.id,
           name: org.name,
+          envPrefix: org.envPrefix,
           attioWorkspaceSlug: org.attioWorkspaceSlug,
           webhookSecret: credentials.attio.webhookSecret,
         },

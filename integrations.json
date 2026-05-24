@@ -20,5 +20,16 @@
       "triggers": ["Attio: list-entry.created webhook"],
       "targets": ["Slack: notification"]
     }
+    ,
+    {
+      "id": "lead-intake",
+      "name": "Lead Intake",
+      "description": "Przyjmuje leady z landing page'y, tworzy w Attio CRM i Brevo",
+      "type": "webhook",
+      "module": "./src/integrations/lead-intake/index.js",
+      "requiredServices": ["attio"],
+      "triggers": ["LP form submission"],
+      "targets": ["Attio: Person + Deal + List entry", "Brevo: contact"]
+    }
   ]
 }

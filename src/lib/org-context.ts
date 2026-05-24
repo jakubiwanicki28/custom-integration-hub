@@ -42,6 +42,7 @@ export interface OrgContext {
   org: {
     id: string;
     name: string;
+    envPrefix: string;
     attioWorkspaceSlug: string;
     webhookSecret: string;
   };
