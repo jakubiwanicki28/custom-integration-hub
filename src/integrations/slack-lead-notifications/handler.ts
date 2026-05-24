@@ -165,29 +165,38 @@ export function createHandler(ctx: OrgContext) {
       }
     }
 
-    const payload = req.body as AttioWebhookPayload;
-    log.info({ eventType: payload.event_type, bodyKeys: Object.keys(req.body), body: JSON.stringify(req.body).slice(0, 500) }, 'Webhook payload received');
+    // Attio wraps events in { webhook_id, events: [...] }
+    const body = req.body as { webhook_id?: string; events?: AttioWebhookPayload[] };
     res.status(200).json({ status: 'accepted' });
 
-    if (payload.event_type !== 'list-entry.created') {
-      log.info({ eventType: payload.event_type }, 'Ignoring non-list-entry.created event');
+    const events = body.events;
+    if (!Array.isArray(events) || events.length === 0) {
+      log.warn({ bodyKeys: Object.keys(req.body) }, 'Webhook payload has no events array');
       return;
     }
 
-    const listId = payload.id?.list_id;
-    const dealRecordId = payload.parent_record_id;
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
 
-    if (!listId || !dealRecordId) {
-      log.error({ payload }, 'Missing list_id or parent_record_id in webhook payload');
-      return;
-    }
+    for (const event of events) {
+      if (event.event_type !== 'list-entry.created') {
+        log.info({ eventType: event.event_type }, 'Ignoring non-list-entry.created event');
+        continue;
+      }
 
-    processListEntry(listId, dealRecordId, idempotencyKey).catch(err => {
-      const key = idempotencyKey || `${listId}:${dealRecordId}`;
-      processedEntries.delete(key);
-      log.error({ err, listId, dealRecordId }, 'Unhandled error in lead processing — will retry on next webhook');
-    });
+      const listId = event.id?.list_id;
+      const dealRecordId = event.parent_record_id;
+
+      if (!listId || !dealRecordId) {
+        log.error({ event }, 'Missing list_id or parent_record_id in webhook event');
+        continue;
+      }
+
+      processListEntry(listId, dealRecordId, idempotencyKey).catch(err => {
+        const key = idempotencyKey || `${listId}:${dealRecordId}`;
+        processedEntries.delete(key);
+        log.error({ err, listId, dealRecordId }, 'Unhandled error in lead processing — will retry on next webhook');
+      });
+    }
   }
 
   // --- Manual trigger for dashboard ---
