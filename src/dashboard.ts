@@ -279,7 +279,7 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', asyn
 
     const result = await attio.registerWebhook(targetUrl, [{
       event_type: 'list-entry.created',
-      filter: { $or: listIds.map(id => ({ field: 'id.list_id', operator: 'equals', value: id })) },
+      filter: null,
     }]);
 
     if (!result) {
