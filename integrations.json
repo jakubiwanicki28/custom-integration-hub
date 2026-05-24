@@ -22,6 +22,16 @@
     }
     ,
     {
+      "id": "calendly-booking-sync",
+      "name": "Calendly → Attio: Booking sync",
+      "description": "Przenosi lead na 'Konsultacja umówiona' gdy ktoś umówi spotkanie przez Calendly",
+      "type": "webhook",
+      "module": "./src/integrations/calendly-booking-sync/index.js",
+      "requiredServices": ["attio"],
+      "triggers": ["Calendly: invitee.created webhook"],
+      "targets": ["Attio: Deal status + list entry status"]
+    },
+    {
       "id": "lead-intake",
       "name": "Lead Intake",
       "description": "Przyjmuje leady z landing page'y, tworzy w Attio CRM i Brevo",

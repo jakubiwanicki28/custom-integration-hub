@@ -29,6 +29,19 @@
           }
         },
         {
+          "integrationId": "calendly-booking-sync",
+          "status": "development",
+          "config": {
+            "campaignLists": {
+              "a87fbbdf-8cab-4630-a3cc-9f5756dc944a": {
+                "listName": "Akademia Biznesu",
+                "statusSlug": "status_kampania_akademia_biznesu",
+                "konsultacjaStageId": "0aec4a2f-7253-4e1d-a13a-d21db4707a1a"
+              }
+            }
+          }
+        },
+        {
           "integrationId": "lead-intake",
           "status": "development",
           "config": {
