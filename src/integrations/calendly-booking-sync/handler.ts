@@ -95,7 +95,7 @@ export function createHandler(ctx: OrgContext) {
 
   // --- Core pipeline ---
 
-  async function syncBooking(email: string, startTime: string): Promise<BookingSyncResult> {
+  async function syncBooking(email: string, startTime: string | null): Promise<BookingSyncResult> {
     // 1. Find Person in Attio by email
     const person = await attio.findPersonByEmail(email);
     if (!person) {
@@ -120,8 +120,8 @@ export function createHandler(ctx: OrgContext) {
         const entries = await attio.findListEntriesByDeal(listId, dealId);
         if (entries.length === 0) continue;
 
-        // Update deal once (not per entry)
-        if (!updatedDeals.has(dealId)) {
+        // Update deal once (not per entry) — only set date if we have it
+        if (!updatedDeals.has(dealId) && startTime) {
           await attio.updateDealValues(dealId, { data_konsultacji: startTime });
           updatedDeals.add(dealId);
         }
@@ -130,10 +130,12 @@ export function createHandler(ctx: OrgContext) {
         const dealName = deal ? getDealName(deal) : dealId;
 
         for (const entry of entries) {
-          await attio.updateListEntry(listId, entry.id.entry_id, {
+          const entryUpdate: Record<string, unknown> = {
             [config.statusSlug]: [{ status: config.konsultacjaStageId }],
-            data_konsultacji: startTime,
-          });
+          };
+          if (startTime) entryUpdate.data_konsultacji = startTime;
+
+          await attio.updateListEntry(listId, entry.id.entry_id, entryUpdate);
 
           log.info({ email, dealName, listName: config.listName, entryId: entry.id.entry_id }, 'Booking synced — status updated to Konsultacja umówiona');
           synced++;
@@ -203,7 +205,7 @@ export function createHandler(ctx: OrgContext) {
 
   async function processManual(email: string): Promise<BookingSyncResult> {
     try {
-      const startTime = await getCalendlyBookingTime(email) || new Date().toISOString();
+      const startTime = await getCalendlyBookingTime(email);
       return await syncBooking(email, startTime);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -231,7 +233,7 @@ export function createHandler(ctx: OrgContext) {
     processedEvents.set(key, Date.now());
 
     getCalendlyBookingTime(email).then(startTime => {
-      return syncBooking(email, startTime || new Date().toISOString());
+      return syncBooking(email, startTime);
     }).catch(err => {
       processedEvents.delete(key);
       log.error({ err, email }, 'Unhandled error in booking notify sync');
