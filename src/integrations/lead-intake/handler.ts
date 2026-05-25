@@ -1,6 +1,7 @@
-import type { OrgContext } from '../../lib/org-context.js';
+import type { OrgContext, AttioClient } from '../../lib/org-context.js';
 import { fetchWithTimeout } from '../../lib/fetch.js';
 import type { LeadIntakeRequest, LeadIntakeResponse, CampaignConfig } from './types.js';
+import type { Logger } from 'pino';
 
 export function createHandler(ctx: OrgContext) {
   const attio = ctx.clients.attio;
@@ -47,8 +48,12 @@ export function createHandler(ctx: OrgContext) {
 
     if (!firstName) return { error: 'First name is required' };
 
+    const source = typeof b.source === 'string' ? b.source.trim() || undefined : undefined;
+    const submittedAt = typeof b.submittedAt === 'string' ? b.submittedAt.trim() || undefined : undefined;
+    const company = String(b.company ?? b.studio ?? '').trim() || undefined;
+
     return {
-      data: { firstName, lastName: lastName || '', email, phone: normalizePhone(phone), campaign },
+      data: { firstName, lastName: lastName || '', email, phone: normalizePhone(phone), campaign, source, submittedAt, company },
     };
   }
 
@@ -100,6 +105,38 @@ export function createHandler(ctx: OrgContext) {
     }
   }
 
+  // --- Note helper (fire-and-forget) ---
+
+  async function createLeadNote(
+    dealId: string, personId: string, dealName: string, data: LeadIntakeRequest,
+  ): Promise<void> {
+    const lines = [
+      `Źródło: ${data.source ?? data.campaign}`,
+      `Data zgłoszenia: ${data.submittedAt ?? new Date().toISOString()}`,
+      data.company ? `Firma/Studio: ${data.company}` : null,
+      `Email: ${data.email}`,
+      data.phone ? `Telefon: ${data.phone}` : null,
+    ].filter(Boolean).join('\n');
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Note on Deal
+    await attio.createNote({
+      parentObject: 'deals',
+      parentRecordId: dealId,
+      title: `Lead — ${data.source ?? data.campaign} — ${today}`,
+      content: lines,
+    });
+
+    // Note on Person (per CLAUDE.md: include deal name for context)
+    await attio.createNote({
+      parentObject: 'people',
+      parentRecordId: personId,
+      title: `Lead — ${dealName} — ${today}`,
+      content: lines,
+    });
+  }
+
   // --- Main pipeline ---
 
   async function processLead(data: LeadIntakeRequest): Promise<LeadIntakeResponse> {
@@ -115,8 +152,11 @@ export function createHandler(ctx: OrgContext) {
     });
     if (!personId) return { ok: false, error: 'Failed to create person in CRM' };
 
-    // 2. Create Deal
-    const dealName = `${campaignConfig.dealPrefix} — ${data.firstName} ${data.lastName}`.trim();
+    // 2. Create Deal (include company in name if present)
+    const fullName = `${data.firstName} ${data.lastName}`.trim();
+    const dealName = data.company
+      ? `${campaignConfig.dealPrefix} — ${fullName} — ${data.company}`
+      : `${campaignConfig.dealPrefix} — ${fullName}`;
     const dealId = await attio.createDeal({
       name: dealName,
       stageId: dealStageLeadId,
@@ -125,17 +165,27 @@ export function createHandler(ctx: OrgContext) {
     });
     if (!dealId) return { ok: false, error: 'Failed to create deal in CRM' };
 
-    // 3. Add to campaign list
-    const entryValues = {
-      [campaignConfig.listStatusSlug]: [{ status: campaignConfig.initialStageId }],
-    };
+    // 3. Add to campaign list (entry_values conditional on list having a status attribute)
+    const entryValues: Record<string, unknown> = {};
+    if (campaignConfig.listStatusSlug && campaignConfig.initialStageId) {
+      entryValues[campaignConfig.listStatusSlug] = [{ status: campaignConfig.initialStageId }];
+    }
     const entryId = await attio.addListEntry(campaignConfig.listId, dealId, entryValues);
     if (!entryId) {
       log.warn({ dealId, campaign: data.campaign }, 'Deal created but failed to add to campaign list');
     }
 
-    // 4. Brevo (fire-and-forget)
-    sendToBrevo(data, campaignConfig.brevoListId).catch(err => log.error({ err }, 'Brevo fire-and-forget error'));
+    // 4. Note on Deal + Person (non-blocking, fire-and-forget)
+    if (campaignConfig.createNote) {
+      createLeadNote(dealId, personId, dealName, data).catch(err =>
+        log.warn({ err, dealId }, 'Note creation failed (non-blocking)'),
+      );
+    }
+
+    // 5. Brevo (fire-and-forget, only if configured)
+    if (campaignConfig.brevoListId) {
+      sendToBrevo(data, campaignConfig.brevoListId).catch(err => log.error({ err }, 'Brevo fire-and-forget error'));
+    }
 
     log.info({ personId, dealId, entryId, campaign: data.campaign, email: data.email }, 'Lead processed');
     return { ok: true };

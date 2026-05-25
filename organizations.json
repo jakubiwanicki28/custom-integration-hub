@@ -99,6 +99,32 @@
               }
             }
           }
+        },
+        {
+          "integrationId": "lead-intake",
+          "status": "development",
+          "config": {
+            "campaigns": {
+              "lp-a": {
+                "listId": "176d7c55-cc11-413a-9b33-a82cee5f0f2d",
+                "dealPrefix": "[A]",
+                "createNote": true
+              },
+              "lp-b": {
+                "listId": "176d7c55-cc11-413a-9b33-a82cee5f0f2d",
+                "dealPrefix": "[B]",
+                "createNote": true
+              }
+            },
+            "dealOwnerId": "9bb1c495-53ef-4d26-8f1d-d6e3555b4d73",
+            "dealStageLeadId": "55006628-fed1-4869-aec5-485da469626d",
+            "allowedOrigins": [
+              "https://strona-dla-architekta-a.velocy.co",
+              "https://strona-dla-architekta-b.velocy.co",
+              "http://localhost:5173",
+              "http://localhost:3000"
+            ]
+          }
         }
       ]
     }

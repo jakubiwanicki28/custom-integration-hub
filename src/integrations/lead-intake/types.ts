@@ -4,6 +4,10 @@ export interface LeadIntakeRequest {
   email: string;
   phone: string;
   campaign: string;
+  // Optional metadata from LP
+  source?: string;
+  submittedAt?: string;
+  company?: string;
 }
 
 export interface LeadIntakeResponse {
@@ -13,8 +17,9 @@ export interface LeadIntakeResponse {
 
 export interface CampaignConfig {
   listId: string;
-  listStatusSlug: string;
-  initialStageId: string;
+  listStatusSlug?: string;
+  initialStageId?: string;
   dealPrefix: string;
-  brevoListId: number;
+  brevoListId?: number;
+  createNote?: boolean;
 }
