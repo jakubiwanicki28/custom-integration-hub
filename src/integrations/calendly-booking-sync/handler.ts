@@ -56,34 +56,41 @@ export function createHandler(ctx: OrgContext) {
     const url = new URL('https://api.calendly.com/scheduled_events');
     url.searchParams.set('user', calendlyUserUri);
     url.searchParams.set('invitee_email', email);
-    url.searchParams.set('status', 'active');
     url.searchParams.set('sort', 'start_time:desc');
     url.searchParams.set('count', '1');
 
-    try {
-      const res = await fetchWithTimeout(url.toString(), {
-        headers: { Authorization: `Bearer ${calendlyToken}` },
-      });
+    // Retry up to 2 times with delay — Calendly API needs time to propagate new bookings
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetchWithTimeout(url.toString(), {
+          headers: { Authorization: `Bearer ${calendlyToken}` },
+        });
 
-      if (!res.ok) {
-        log.error({ status: res.status, email }, 'Calendly API error');
+        if (!res.ok) {
+          log.error({ status: res.status, email }, 'Calendly API error');
+          return null;
+        }
+
+        const data = await safeJson<{ collection: Array<{ start_time: string }> }>(res);
+        const startTime = data.collection?.[0]?.start_time;
+
+        if (startTime) {
+          log.info({ email, startTime }, 'Calendly booking time found');
+          return startTime;
+        }
+
+        if (attempt === 0) {
+          log.info({ email }, 'No Calendly booking found yet — retrying in 5s');
+          await new Promise(r => setTimeout(r, 5000));
+        }
+      } catch (err) {
+        log.error({ err, email }, 'Failed to query Calendly API');
         return null;
       }
-
-      const data = await safeJson<{ collection: Array<{ start_time: string }> }>(res);
-      const startTime = data.collection?.[0]?.start_time;
-
-      if (startTime) {
-        log.info({ email, startTime }, 'Calendly booking time found');
-      } else {
-        log.warn({ email }, 'No active Calendly booking found for email');
-      }
-
-      return startTime ?? null;
-    } catch (err) {
-      log.error({ err, email }, 'Failed to query Calendly API');
-      return null;
     }
+
+    log.warn({ email }, 'No Calendly booking found after retries');
+    return null;
   }
 
   // --- Core pipeline ---
