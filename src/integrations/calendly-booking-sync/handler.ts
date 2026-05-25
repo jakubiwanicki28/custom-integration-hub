@@ -47,7 +47,41 @@ export function createHandler(ctx: OrgContext) {
 
   // --- Calendly API lookup ---
 
-  async function getCalendlyBookingTime(email: string): Promise<string | null> {
+  /** Direct lookup by event URI — most reliable, no search needed */
+  async function getCalendlyBookingTimeByEvent(eventUri: string): Promise<string | null> {
+    if (!calendlyToken) {
+      log.warn('Calendly API token not configured — cannot fetch booking time');
+      return null;
+    }
+
+    try {
+      const res = await fetchWithTimeout(eventUri, {
+        headers: { Authorization: `Bearer ${calendlyToken}` },
+      });
+
+      if (!res.ok) {
+        log.error({ status: res.status, eventUri }, 'Calendly event lookup failed');
+        return null;
+      }
+
+      const data = await safeJson<{ resource: { start_time: string } }>(res);
+      const startTime = data.resource?.start_time;
+
+      if (startTime) {
+        log.info({ eventUri, startTime }, 'Calendly booking time found via event URI');
+        return startTime;
+      }
+
+      log.warn({ eventUri }, 'Calendly event found but missing start_time');
+      return null;
+    } catch (err) {
+      log.error({ err, eventUri }, 'Failed to fetch Calendly event');
+      return null;
+    }
+  }
+
+  /** Search by email — fallback when no event URI available */
+  async function getCalendlyBookingTimeByEmail(email: string): Promise<string | null> {
     if (!calendlyToken || !calendlyUserUri) {
       log.warn('Calendly API token or user URI not configured — cannot fetch booking time');
       return null;
@@ -59,8 +93,9 @@ export function createHandler(ctx: OrgContext) {
     url.searchParams.set('sort', 'start_time:desc');
     url.searchParams.set('count', '1');
 
-    // Retry up to 2 times with delay — Calendly API needs time to propagate new bookings
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // Retry up to 3 times with increasing delay — Calendly API can be slow to propagate
+    const delays = [5000, 8000]; // delays before 2nd and 3rd attempts
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await fetchWithTimeout(url.toString(), {
           headers: { Authorization: `Bearer ${calendlyToken}` },
@@ -75,13 +110,14 @@ export function createHandler(ctx: OrgContext) {
         const startTime = data.collection?.[0]?.start_time;
 
         if (startTime) {
-          log.info({ email, startTime }, 'Calendly booking time found');
+          log.info({ email, startTime }, 'Calendly booking time found via email search');
           return startTime;
         }
 
-        if (attempt === 0) {
-          log.info({ email }, 'No Calendly booking found yet — retrying in 5s');
-          await new Promise(r => setTimeout(r, 5000));
+        if (attempt < delays.length) {
+          const delay = delays[attempt];
+          log.info({ email, attempt: attempt + 1, nextDelayMs: delay }, 'No Calendly booking found yet — retrying');
+          await new Promise(r => setTimeout(r, delay));
         }
       } catch (err) {
         log.error({ err, email }, 'Failed to query Calendly API');
@@ -89,8 +125,18 @@ export function createHandler(ctx: OrgContext) {
       }
     }
 
-    log.warn({ email }, 'No Calendly booking found after retries');
+    log.warn({ email }, 'No Calendly booking found after 3 retries');
     return null;
+  }
+
+  /** Try event URI first (instant, reliable), fall back to email search */
+  async function getCalendlyBookingTime(email: string, eventUri?: string): Promise<string | null> {
+    if (eventUri) {
+      const startTime = await getCalendlyBookingTimeByEvent(eventUri);
+      if (startTime) return startTime;
+      log.info({ email, eventUri }, 'Event URI lookup failed — falling back to email search');
+    }
+    return getCalendlyBookingTimeByEmail(email);
   }
 
   // --- Core pipeline ---
@@ -112,7 +158,12 @@ export function createHandler(ctx: OrgContext) {
 
     let synced = 0;
 
-    // 3. Update deals and campaign list entries
+    // 3. Update deals and campaign list entries — only if we have a confirmed booking time
+    if (!startTime) {
+      log.warn({ email }, 'No booking time available — skipping status update to avoid false positives');
+      return { success: false, email, error: 'Calendly booking time not found' };
+    }
+
     const updatedDeals = new Set<string>();
 
     for (const [listId, config] of Object.entries(campaignLists)) {
@@ -120,8 +171,8 @@ export function createHandler(ctx: OrgContext) {
         const entries = await attio.findListEntriesByDeal(listId, dealId);
         if (entries.length === 0) continue;
 
-        // Update deal once (not per entry) — only set date if we have it
-        if (!updatedDeals.has(dealId) && startTime) {
+        // Update deal once (not per entry)
+        if (!updatedDeals.has(dealId)) {
           await attio.updateDealValues(dealId, { data_konsultacji: startTime });
           updatedDeals.add(dealId);
         }
@@ -130,12 +181,10 @@ export function createHandler(ctx: OrgContext) {
         const dealName = deal ? getDealName(deal) : dealId;
 
         for (const entry of entries) {
-          const entryUpdate: Record<string, unknown> = {
+          await attio.updateListEntry(listId, entry.id.entry_id, {
             [config.statusSlug]: [{ status: config.konsultacjaStageId }],
-          };
-          if (startTime) entryUpdate.data_konsultacji = startTime;
-
-          await attio.updateListEntry(listId, entry.id.entry_id, entryUpdate);
+            data_konsultacji: startTime,
+          });
 
           log.info({ email, dealName, listName: config.listName, entryId: entry.id.entry_id }, 'Booking synced — status updated to Konsultacja umówiona');
           synced++;
@@ -217,7 +266,7 @@ export function createHandler(ctx: OrgContext) {
   // --- LP frontend notification (replaces Calendly webhook for free plan) ---
 
   async function notifyHandler(req: Request, res: Response): Promise<void> {
-    const { email } = req.body as { email?: string };
+    const { email, eventUri } = req.body as { email?: string; eventUri?: string };
     if (!email) {
       res.status(400).json({ ok: false, error: 'Missing email' });
       return;
@@ -232,8 +281,13 @@ export function createHandler(ctx: OrgContext) {
     }
     processedEvents.set(key, Date.now());
 
-    getCalendlyBookingTime(email).then(startTime => {
+    getCalendlyBookingTime(email, eventUri).then(startTime => {
       return syncBooking(email, startTime);
+    }).then(result => {
+      // Clear idempotency key if booking time wasn't found — allow retry later
+      if (result && !result.success && result.error === 'Calendly booking time not found') {
+        processedEvents.delete(key);
+      }
     }).catch(err => {
       processedEvents.delete(key);
       log.error({ err, email }, 'Unhandled error in booking notify sync');
