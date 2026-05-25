@@ -80,57 +80,93 @@ export function createHandler(ctx: OrgContext) {
     }
   }
 
-  /** Search by email — fallback when no event URI available */
+  /** Search by email, then fallback to recent events without email filter */
   async function getCalendlyBookingTimeByEmail(email: string): Promise<string | null> {
     if (!calendlyToken || !calendlyUserUri) {
       log.warn('Calendly API token or user URI not configured — cannot fetch booking time');
       return null;
     }
 
+    // Initial wait — booking JUST happened, Calendly API needs time to propagate
+    log.info({ email }, 'Waiting 15s for Calendly API propagation before first lookup');
+    await new Promise(r => setTimeout(r, 15_000));
+
+    // Strategy 1: search by invitee_email (try lowercase — Calendly may be case-sensitive)
+    const emailLower = email.toLowerCase();
     const url = new URL('https://api.calendly.com/scheduled_events');
     url.searchParams.set('user', calendlyUserUri);
-    url.searchParams.set('invitee_email', email);
+    url.searchParams.set('invitee_email', emailLower);
     url.searchParams.set('sort', 'start_time:desc');
     url.searchParams.set('count', '1');
 
-    // Initial wait — booking JUST happened, Calendly API needs time to propagate
-    log.info({ email }, 'Waiting 12s for Calendly API propagation before first lookup');
-    await new Promise(r => setTimeout(r, 12_000));
-
-    // Retry up to 4 times with increasing delay — Calendly can take 30s+ to propagate
-    const delays = [10_000, 15_000, 20_000]; // delays before 2nd, 3rd, 4th attempts
-    for (let attempt = 0; attempt < 4; attempt++) {
+    const delays = [10_000, 15_000];
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await fetchWithTimeout(url.toString(), {
           headers: { Authorization: `Bearer ${calendlyToken}` },
         });
 
         if (!res.ok) {
-          log.error({ status: res.status, email }, 'Calendly API error');
-          return null;
+          log.error({ status: res.status, email: emailLower }, 'Calendly API error (email search)');
+          break; // Don't retry on API errors — try fallback instead
         }
 
-        const data = await safeJson<{ collection: Array<{ start_time: string }> }>(res);
-        const startTime = data.collection?.[0]?.start_time;
+        const data = await safeJson<{ collection: Array<{ start_time: string; uri: string; created_at?: string }> }>(res);
+        const event = data.collection?.[0];
 
-        if (startTime) {
-          log.info({ email, startTime, attempt: attempt + 1 }, 'Calendly booking time found via email search');
-          return startTime;
+        if (event?.start_time) {
+          log.info({ email, startTime: event.start_time, attempt: attempt + 1 }, 'Calendly booking time found via email search');
+          return event.start_time;
         }
 
         if (attempt < delays.length) {
-          const delay = delays[attempt];
-          log.info({ email, attempt: attempt + 1, nextDelayMs: delay }, 'No Calendly booking found yet — retrying');
-          await new Promise(r => setTimeout(r, delay));
+          log.info({ email, attempt: attempt + 1, nextDelayMs: delays[attempt] }, 'No Calendly booking found by email — retrying');
+          await new Promise(r => setTimeout(r, delays[attempt]));
         }
       } catch (err) {
-        log.error({ err, email }, 'Failed to query Calendly API');
-        return null;
+        log.error({ err, email }, 'Failed to query Calendly API (email search)');
+        break;
       }
     }
 
-    log.warn({ email }, 'No Calendly booking found after 4 retries (~57s total wait)');
-    return null;
+    // Strategy 2: fetch recent events WITHOUT email filter — grab most recent created in last 5 min
+    log.info({ email }, 'Email search failed — trying fallback: fetch recent events without email filter');
+    try {
+      const fallbackUrl = new URL('https://api.calendly.com/scheduled_events');
+      fallbackUrl.searchParams.set('user', calendlyUserUri);
+      fallbackUrl.searchParams.set('min_start_time', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+      fallbackUrl.searchParams.set('sort', 'start_time:desc');
+      fallbackUrl.searchParams.set('count', '5');
+
+      const res = await fetchWithTimeout(fallbackUrl.toString(), {
+        headers: { Authorization: `Bearer ${calendlyToken}` },
+      });
+
+      if (!res.ok) {
+        log.error({ status: res.status }, 'Calendly API error (fallback recent events)');
+        return null;
+      }
+
+      const data = await safeJson<{ collection: Array<{ start_time: string; uri: string; created_at: string }> }>(res);
+      const events = data.collection ?? [];
+
+      log.info({ email, eventsFound: events.length }, 'Fallback: recent Calendly events');
+
+      // Find event created in the last 5 minutes (our booking)
+      const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+      const recentEvent = events.find(e => new Date(e.created_at).getTime() > fiveMinAgo);
+
+      if (recentEvent?.start_time) {
+        log.info({ email, startTime: recentEvent.start_time, eventUri: recentEvent.uri }, 'Calendly booking time found via recent events fallback');
+        return recentEvent.start_time;
+      }
+
+      log.warn({ email, eventsFound: events.length }, 'No recently created Calendly event found in fallback');
+      return null;
+    } catch (err) {
+      log.error({ err, email }, 'Failed to query Calendly API (fallback)');
+      return null;
+    }
   }
 
   /** Try event URI first (instant, reliable), fall back to email search */
