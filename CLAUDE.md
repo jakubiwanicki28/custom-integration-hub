@@ -146,17 +146,36 @@ When creating notes, always create TWO: one on the **Person** and one on the **D
 
 ## Landing Pages
 
-Landing pages are separate Next.js projects deployed on Vercel. They live outside this repo at `/Users/v/projects-local/wwpartners-lps/`. LPs contain **no business logic** — they are forms + Calendly embeds that POST data to the hub.
+Landing pages are separate projects deployed on Vercel. They live outside this repo, organized at `/Users/v/landing-pages/` by organization. LPs contain **no business logic** — they are forms + Calendly embeds that POST data to the hub.
+
+```
+/Users/v/landing-pages/
+  ww-partners/
+    lp-akademia-a/              # A/B variant A (akademiabiznesu.vercel.app)
+    lp-akademia-b/              # A/B variant B (lp-2-akademia-biznesu.vercel.app)
+    lp-raport/                  # Raport Strategiczny (raport-akademia.vercel.app)
+  velocy/
+    lp-service-a/               # A/B variant A (Velocy service LP)
+    lp-service-b/               # A/B variant B (architekci)
+    meta-ad-creatives/          # Static HTML/PNG ad creatives for Meta
+```
 
 ### WW Partners Landing Pages
 
-| LP | Repo | URL | Campaign | Calendly? |
+| Local folder | GitHub repo | Vercel URL | Campaign | Calendly? |
 |---|---|---|---|---|
-| **LP2-Akademia-Biznesu** | `Velocy-co/LP2-Akademia-Biznesu` | `lp-2-akademia-biznesu.vercel.app` | `akademia` | Yes |
-| **wwp-lp-1** | `Velocy-co/wwp-lp-1` | `akademiabiznesu.vercel.app` | `akademia` | Yes |
-| **RAPORTLP** | — | `raport-akademia.vercel.app` | `raport` | No |
+| `lp-akademia-a` | `Velocy-co/wwp-lp-1` | `akademiabiznesu.vercel.app` | `akademia` | Yes |
+| `lp-akademia-b` | `Velocy-co/LP2-Akademia-Biznesu` | `lp-2-akademia-biznesu.vercel.app` | `akademia` | Yes |
+| `lp-raport` | `Velocy-co/RAPORTLP` | `raport-akademia.vercel.app` | `raport` | No |
 
-LP2 and wwp-lp-1 are **A/B test variants** of the same Akademia Biznesu campaign — different layouts, identical data flow. RAPORTLP is a separate campaign (Raport Strategiczny) with no Calendly booking.
+### Velocy Landing Pages
+
+| Local folder | GitHub repo | Description |
+|---|---|---|
+| `lp-service-a` | `Velocy-co/LP-VELOCY.CO-A` | Service LP variant A |
+| `lp-service-b` | `Velocy-co/LP-VELOCY.CO-B` | Service LP variant B (architekci) |
+
+lp-akademia-a and lp-akademia-b are **A/B test variants** of the same Akademia Biznesu campaign — different layouts, identical data flow. lp-raport is a separate campaign (Raport Strategiczny) with no Calendly booking.
 
 ### LP → Hub Data Flow
 
