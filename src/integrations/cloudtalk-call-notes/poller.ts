@@ -6,6 +6,10 @@ const INITIAL_DELAY = 30 * 1000;
 const MIN_DURATION = 30;
 const LOOKBACK_ON_START = 5 * 60 * 1000;
 
+// Safety buffer: never advance lastCheck closer than this to "now".
+// Covers in-progress calls and CloudTalk CDR processing delay.
+const LOOKBACK_BUFFER = 5 * 60 * 1000;
+
 export function createPoller(
   cloudtalk: CloudTalkClient,
   handler: {
@@ -22,9 +26,13 @@ export function createPoller(
       const calls = await cloudtalk.getCallsSince(lastCheck);
       const eligible = calls.filter(c => c.duration >= MIN_DURATION);
 
+      // Always cap lastCheck at now - buffer so we re-check recent calls
+      // that may still be in progress or pending CDR creation
+      const safeCheckpoint = new Date(Date.now() - LOOKBACK_BUFFER);
+
       if (eligible.length === 0) {
         log.info({ since: lastCheck.toISOString(), totalCalls: calls.length }, 'Poll: no new eligible calls');
-        lastCheck = new Date();
+        if (safeCheckpoint > lastCheck) lastCheck = safeCheckpoint;
         return;
       }
 
@@ -51,14 +59,14 @@ export function createPoller(
       }
 
       log.info({ processed, skipped: eligible.length - processed }, 'Poll cycle complete');
-      lastCheck = new Date();
+      if (safeCheckpoint > lastCheck) lastCheck = safeCheckpoint;
     } catch (err) {
       log.error({ err }, 'Poll cycle error');
     }
   }
 
   return function startPoller(): void {
-    log.info({ intervalMs: POLL_INTERVAL, initialDelayMs: INITIAL_DELAY }, 'Poller scheduled');
+    log.info({ intervalMs: POLL_INTERVAL, initialDelayMs: INITIAL_DELAY, lookbackBufferMs: LOOKBACK_BUFFER }, 'Poller scheduled');
 
     setTimeout(() => {
       log.info('Poller started');
