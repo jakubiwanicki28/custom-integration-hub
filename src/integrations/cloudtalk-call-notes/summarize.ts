@@ -17,10 +17,6 @@ function formatDirection(type: string): string {
   }
 }
 
-function todayISO(): string {
-  return new Date().toISOString().split('T')[0];
-}
-
 export function formatNote(params: {
   call: CloudTalkCall;
   dealName: string | null;
@@ -28,7 +24,7 @@ export function formatNote(params: {
   transcript: string | null;
 }): { personNote: ProcessedNote; dealNote: ProcessedNote | null } {
   const { call, dealName, summary, transcript } = params;
-  const date = todayISO();
+  const date = call.startedAt.split('T')[0];
 
   // Build note content
   const sections: string[] = [];
