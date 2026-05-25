@@ -88,8 +88,8 @@ export function createHandler(ctx: OrgContext) {
     }
 
     // Initial wait — booking JUST happened, Calendly API needs time to propagate
-    log.info({ email }, 'Waiting 15s for Calendly API propagation before first lookup');
-    await new Promise(r => setTimeout(r, 15_000));
+    log.info({ email }, 'Waiting 10s for Calendly API propagation before email lookup');
+    await new Promise(r => setTimeout(r, 10_000));
 
     // Strategy 1: search by invitee_email (try lowercase — Calendly may be case-sensitive)
     const emailLower = email.toLowerCase();
