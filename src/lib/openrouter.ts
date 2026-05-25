@@ -58,65 +58,6 @@ async function chatCompletion(
   return data.choices?.[0]?.message?.content ?? null;
 }
 
-export async function transcribeAudio(audioBuffer: Buffer): Promise<string | null> {
-  const base64Audio = audioBuffer.toString('base64');
-  const sizeMB = audioBuffer.length / (1024 * 1024);
-
-  if (sizeMB > 50) {
-    log.warn({ sizeMB: sizeMB.toFixed(1) }, 'Audio too large for transcription, skipping');
-    return null;
-  }
-
-  log.info({ sizeMB: sizeMB.toFixed(1) }, 'Sending audio to OpenRouter for transcription');
-
-  const messages = [
-    {
-      role: 'system',
-      content: 'Transkrybuj poniższą rozmowę telefoniczną. Zapisz dokładnie co mówi każda ze stron. Oznacz osoby jako "Agent" i "Klient". Pisz po polsku.',
-    },
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: 'Proszę o transkrypcję tej rozmowy telefonicznej:' },
-        {
-          type: 'input_audio',
-          input_audio: { data: base64Audio, format: 'wav' },
-        },
-      ],
-    },
-  ];
-
-  return chatCompletion(getModel(), messages);
-}
-
-export async function summarizeTranscript(
-  transcript: string,
-  callMeta: { direction: string; duration: number; agentName: string },
-): Promise<string | null> {
-  const systemPrompt = `Jesteś asystentem sprzedażowym. Na podstawie transkrypcji rozmowy telefonicznej przygotuj zwięzłe podsumowanie po polsku.
-
-Struktura podsumowania:
-1. **Podsumowanie** — 2-3 zdania opisujące temat i wynik rozmowy
-2. **Kluczowe punkty** — lista najważniejszych tematów
-3. **Następne kroki** — jeśli ustalono konkretne działania, wymień je
-4. **Nastrój rozmowy** — krótka ocena (pozytywna/neutralna/negatywna)
-
-Pisz zwięźle i konkretnie. Skup się na informacjach istotnych dla sprzedaży.`;
-
-  const userMessage = `Kontekst rozmowy:
-- Kierunek: ${callMeta.direction === 'outgoing' ? 'wychodzący' : 'przychodzący'}
-- Czas trwania: ${Math.floor(callMeta.duration / 60)} min ${callMeta.duration % 60} s
-- Agent: ${callMeta.agentName}
-
-Transkrypcja:
-${transcript}`;
-
-  return chatCompletion(getModel(), [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userMessage },
-  ]);
-}
-
 export async function transcribeAndSummarize(
   audioBuffer: Buffer,
   callMeta: { direction: string; duration: number; agentName: string },
