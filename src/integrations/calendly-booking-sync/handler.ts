@@ -93,9 +93,13 @@ export function createHandler(ctx: OrgContext) {
     url.searchParams.set('sort', 'start_time:desc');
     url.searchParams.set('count', '1');
 
-    // Retry up to 3 times with increasing delay — Calendly API can be slow to propagate
-    const delays = [5000, 8000]; // delays before 2nd and 3rd attempts
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // Initial wait — booking JUST happened, Calendly API needs time to propagate
+    log.info({ email }, 'Waiting 12s for Calendly API propagation before first lookup');
+    await new Promise(r => setTimeout(r, 12_000));
+
+    // Retry up to 4 times with increasing delay — Calendly can take 30s+ to propagate
+    const delays = [10_000, 15_000, 20_000]; // delays before 2nd, 3rd, 4th attempts
+    for (let attempt = 0; attempt < 4; attempt++) {
       try {
         const res = await fetchWithTimeout(url.toString(), {
           headers: { Authorization: `Bearer ${calendlyToken}` },
@@ -110,7 +114,7 @@ export function createHandler(ctx: OrgContext) {
         const startTime = data.collection?.[0]?.start_time;
 
         if (startTime) {
-          log.info({ email, startTime }, 'Calendly booking time found via email search');
+          log.info({ email, startTime, attempt: attempt + 1 }, 'Calendly booking time found via email search');
           return startTime;
         }
 
@@ -125,7 +129,7 @@ export function createHandler(ctx: OrgContext) {
       }
     }
 
-    log.warn({ email }, 'No Calendly booking found after 3 retries');
+    log.warn({ email }, 'No Calendly booking found after 4 retries (~57s total wait)');
     return null;
   }
 
