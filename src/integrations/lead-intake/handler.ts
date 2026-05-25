@@ -1,7 +1,6 @@
-import type { OrgContext, AttioClient } from '../../lib/org-context.js';
+import type { OrgContext } from '../../lib/org-context.js';
 import { fetchWithTimeout } from '../../lib/fetch.js';
 import type { LeadIntakeRequest, LeadIntakeResponse, CampaignConfig } from './types.js';
-import type { Logger } from 'pino';
 
 export function createHandler(ctx: OrgContext) {
   const attio = ctx.clients.attio;
@@ -18,6 +17,7 @@ export function createHandler(ctx: OrgContext) {
     const digits = phone.replace(/[\s\-\(\)]/g, '');
     if (/^\d{9}$/.test(digits)) return `+48${digits}`;
     if (/^48\d{9}$/.test(digits)) return `+${digits}`;
+    if (/^0048\d{9}$/.test(digits)) return `+${digits.slice(2)}`;
     if (digits.startsWith('+')) return digits;
     return `+${digits}`;
   }
