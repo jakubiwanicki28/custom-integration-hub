@@ -4,11 +4,15 @@ import type { CloudTalkClient } from '../../lib/org-context.js';
 const POLL_INTERVAL = 2 * 60 * 1000;
 const INITIAL_DELAY = 30 * 1000;
 const MIN_DURATION = 30;
-const LOOKBACK_ON_START = 5 * 60 * 1000;
+const LOOKBACK_ON_START = 20 * 60 * 1000;
 
 // Safety buffer: never advance lastCheck closer than this to "now".
-// Covers in-progress calls and CloudTalk CDR processing delay.
-const LOOKBACK_BUFFER = 5 * 60 * 1000;
+// Must be >= longest expected call duration + CDR processing delay (~2 min).
+// 20 min covers calls up to ~18 min, which handles >99% of business calls.
+const LOOKBACK_BUFFER = 20 * 60 * 1000;
+
+// Higher limit to cover the larger lookback window
+const POLL_FETCH_LIMIT = 50;
 
 export function createPoller(
   cloudtalk: CloudTalkClient,
@@ -23,7 +27,7 @@ export function createPoller(
 
   async function poll(): Promise<void> {
     try {
-      const calls = await cloudtalk.getCallsSince(lastCheck);
+      const calls = await cloudtalk.getCallsSince(lastCheck, POLL_FETCH_LIMIT);
       const eligible = calls.filter(c => c.duration >= MIN_DURATION);
 
       // Always cap lastCheck at now - buffer so we re-check recent calls
