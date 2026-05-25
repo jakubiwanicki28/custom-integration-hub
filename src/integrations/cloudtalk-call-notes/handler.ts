@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import type { Logger } from 'pino';
 import { getPersonName, getDealName } from '../../lib/attio.js';
 import type { OrgContext, AttioClient, CloudTalkClient } from '../../lib/org-context.js';
+import type { CloudTalkCall } from '../../lib/cloudtalk.js';
 import { formatNote } from './summarize.js';
 import type { CloudTalkWebhookPayload } from './types.js';
 
@@ -16,7 +17,7 @@ export interface ProcessResult {
 const IDEMPOTENCY_TTL = 60 * 60 * 1000; // 1 hour
 const MIN_CALL_DURATION = 30; // seconds
 
-export function createHandler(ctx: OrgContext, transcribeCall: (call: import('../../lib/cloudtalk.js').CloudTalkCall) => Promise<{ transcript: string; summary: string } | null>) {
+export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkCall) => Promise<{ transcript: string; summary: string } | null>) {
   if (!ctx.clients.cloudtalk) throw new Error('cloudtalk-call-notes handler requires CloudTalk client');
   const attio = ctx.clients.attio;
   const cloudtalk = ctx.clients.cloudtalk;
@@ -40,37 +41,17 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: import('..
     processedCalls.set(callId, Date.now());
   }
 
-  async function processCall(payload: CloudTalkWebhookPayload): Promise<void> {
-    const callId = payload.call_id ?? payload.call_uuid;
-    if (!callId) {
-      log.error({ payload }, 'No call_id in webhook payload');
-      return;
-    }
+  // --- Core processing logic (single code path for all entry points) ---
 
-    if (processedCalls.has(callId)) {
-      log.info({ callId }, 'Call already processed, skipping');
-      return;
-    }
-    processedCalls.set(callId, Date.now());
-
-    log.info({ callId }, 'Processing call');
-
-    const call = await cloudtalk.getCallDetails(callId);
-    if (!call) {
-      log.error({ callId }, 'Could not fetch call details');
-      return;
-    }
+  async function processCallCore(call: CloudTalkCall, phoneOverride?: string): Promise<ProcessResult> {
+    const callId = call.id;
 
     if (call.duration < MIN_CALL_DURATION) {
-      log.info({ callId, duration: call.duration }, 'Call too short, skipping');
-      return;
+      return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };
     }
 
-    const phoneNumber = call.externalNumber || payload.phone_number;
-    if (!phoneNumber) {
-      log.error({ callId }, 'No phone number available');
-      return;
-    }
+    const phoneNumber = phoneOverride || call.externalNumber;
+    if (!phoneNumber) return { success: false, error: 'Brak numeru telefonu' };
 
     let person = await attio.findPersonByPhone(phoneNumber);
 
@@ -81,131 +62,106 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: import('..
       }
     }
 
-    if (!person) {
-      log.warn({ callId, phoneNumber, contactEmails: call.contactEmails }, 'Person not found in Attio, skipping');
-      return;
-    }
+    if (!person) return { success: false, error: `Osoba ${phoneNumber} nie znaleziona w Attio` };
 
-    const personRecordId = person.id.record_id;
     const personName = getPersonName(person);
-
     const deal = await attio.pickBestDeal(person);
     const dealName = deal ? getDealName(deal) : null;
-    const dealRecordId = deal?.id.record_id ?? null;
 
-    log.info({ callId, personName, dealName, dealRecordId }, 'Context resolved');
+    log.info({ callId, personName, dealName, dealRecordId: deal?.id.record_id ?? null }, 'Context resolved');
 
     const aiResult = await transcribeCall(call);
-
     const { personNote, dealNote } = formatNote({
       call, dealName,
       summary: aiResult?.summary ?? null,
       transcript: aiResult?.transcript ?? null,
     });
 
+    let notesCreated = 0;
+
     const personNoteId = await attio.createNote({
       parentObject: 'people',
-      parentRecordId: personRecordId,
+      parentRecordId: person.id.record_id,
       title: personNote.title,
       content: personNote.content,
     });
-
     if (personNoteId) {
       log.info({ callId, personName, noteId: personNoteId }, 'Person note created');
+      notesCreated++;
     }
 
-    if (dealNote && dealRecordId) {
+    if (dealNote && deal) {
       const dealNoteId = await attio.createNote({
         parentObject: 'deals',
-        parentRecordId: dealRecordId,
+        parentRecordId: deal.id.record_id,
         title: dealNote.title,
         content: dealNote.content,
       });
-
       if (dealNoteId) {
         log.info({ callId, dealName, noteId: dealNoteId }, 'Deal note created');
+        notesCreated++;
       }
     }
 
-    log.info({ callId, personName, dealName }, 'Call processing complete');
+    return { success: true, personName, dealName: dealName ?? undefined, notesCreated };
   }
 
-  async function processCallManual(callId: string): Promise<ProcessResult> {
+  // --- Entry point: poller (has CloudTalkCall) / dashboard (has callId only) ---
+
+  async function processCallManual(callId: string, existingCall?: CloudTalkCall): Promise<ProcessResult> {
     try {
-      log.info({ callId }, 'Manual processing started');
-      const call = await cloudtalk.getCallDetails(callId);
+      log.info({ callId, source: existingCall ? 'poller' : 'manual' }, 'Processing started');
+
+      const call = existingCall ?? await cloudtalk.getCallDetails(callId);
       if (!call) return { success: false, error: `Nie znaleziono rozmowy ${callId} w CloudTalk` };
 
-      if (call.duration < MIN_CALL_DURATION) {
-        return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };
-      }
-
-      const phoneNumber = call.externalNumber;
-      if (!phoneNumber) return { success: false, error: 'Brak numeru telefonu' };
-
-      let person = await attio.findPersonByPhone(phoneNumber);
-      if (!person && call.contactEmails.length > 0) {
-        for (const email of call.contactEmails) {
-          person = await attio.findPersonByEmail(email);
-          if (person) break;
-        }
-      }
-      if (!person) return { success: false, error: `Osoba ${phoneNumber} nie znaleziona w Attio` };
-
-      const personName = getPersonName(person);
-      const deal = await attio.pickBestDeal(person);
-      const dealName = deal ? getDealName(deal) : null;
-
-      const aiResult = await transcribeCall(call);
-      const { personNote, dealNote } = formatNote({
-        call, dealName,
-        summary: aiResult?.summary ?? null,
-        transcript: aiResult?.transcript ?? null,
-      });
-
-      let notesCreated = 0;
-
-      const personNoteId = await attio.createNote({
-        parentObject: 'people',
-        parentRecordId: person.id.record_id,
-        title: personNote.title,
-        content: personNote.content,
-      });
-      if (personNoteId) notesCreated++;
-
-      if (dealNote && deal) {
-        const dealNoteId = await attio.createNote({
-          parentObject: 'deals',
-          parentRecordId: deal.id.record_id,
-          title: dealNote.title,
-          content: dealNote.content,
-        });
-        if (dealNoteId) notesCreated++;
-      }
-
-      return { success: true, personName, dealName: dealName ?? undefined, notesCreated };
+      return await processCallCore(call);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Nieznany błąd';
-      log.error({ callId, err }, 'Manual processing failed');
+      log.error({ callId, err }, 'Processing failed');
       return { success: false, error: message };
     }
   }
 
+  // --- Entry point: webhook ---
+
   async function webhookHandler(req: Request, res: Response): Promise<void> {
     const payload = req.body as CloudTalkWebhookPayload;
+    const callId = payload?.call_id ?? payload?.call_uuid;
 
-    if (!payload?.call_id && !payload?.call_uuid) {
+    if (!callId) {
       res.status(400).json({ error: 'Missing call_id or call_uuid' });
+      return;
+    }
+
+    if (processedCalls.has(callId)) {
+      log.info({ callId }, 'Call already processed, skipping webhook');
+      res.status(200).json({ status: 'already_processed' });
       return;
     }
 
     res.status(200).json({ status: 'accepted' });
 
-    processCall(payload).catch(err => {
-      const callId = payload.call_id ?? payload.call_uuid;
-      if (callId) processedCalls.delete(callId);
-      log.error({ err, payload }, 'Unhandled error in call processing — will retry on next webhook');
-    });
+    try {
+      log.info({ callId }, 'Processing call from webhook');
+
+      const call = await cloudtalk.getCallDetails(callId);
+      if (!call) {
+        log.error({ callId }, 'Could not fetch call details');
+        return;
+      }
+
+      const result = await processCallCore(call, payload.phone_number);
+
+      if (result.success) {
+        markCallProcessed(callId);
+        log.info({ callId, personName: result.personName, dealName: result.dealName, notesCreated: result.notesCreated }, 'Webhook processing complete');
+      } else {
+        log.warn({ callId, error: result.error }, 'Webhook processing failed, will retry via poller');
+      }
+    } catch (err) {
+      log.error({ err, callId }, 'Unhandled error in webhook processing — will retry via poller');
+    }
   }
 
   return {

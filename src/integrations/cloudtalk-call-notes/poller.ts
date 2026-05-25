@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import type { CloudTalkClient } from '../../lib/org-context.js';
+import type { CloudTalkCall } from '../../lib/cloudtalk.js';
 
 const POLL_INTERVAL = 2 * 60 * 1000;
 const INITIAL_DELAY = 30 * 1000;
@@ -19,7 +20,7 @@ export function createPoller(
   handler: {
     isCallProcessed: (callId: string) => boolean;
     markCallProcessed: (callId: string) => void;
-    processCallManual: (callId: string) => Promise<{ success: boolean; personName?: string; dealName?: string; notesCreated?: number; error?: string }>;
+    processCallManual: (callId: string, call?: CloudTalkCall) => Promise<{ success: boolean; personName?: string; dealName?: string; notesCreated?: number; error?: string }>;
   },
   log: Logger,
 ) {
@@ -29,6 +30,11 @@ export function createPoller(
     try {
       const calls = await cloudtalk.getCallsSince(lastCheck, POLL_FETCH_LIMIT);
       const eligible = calls.filter(c => c.duration >= MIN_DURATION);
+
+      if (calls.length >= POLL_FETCH_LIMIT) {
+        log.warn({ count: calls.length, limit: POLL_FETCH_LIMIT, since: lastCheck.toISOString() },
+          'Call count hit fetch limit — some calls may be missed');
+      }
 
       // Always cap lastCheck at now - buffer so we re-check recent calls
       // that may still be in progress or pending CDR creation
@@ -51,7 +57,7 @@ export function createPoller(
 
         log.info({ callId: call.id, duration: call.duration, phone: call.externalNumber }, 'Auto-processing call');
 
-        const result = await handler.processCallManual(call.id);
+        const result = await handler.processCallManual(call.id, call);
 
         if (result.success) {
           handler.markCallProcessed(call.id);
