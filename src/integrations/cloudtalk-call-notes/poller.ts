@@ -49,16 +49,16 @@ export function createPoller(
           continue;
         }
 
-        handler.markCallProcessed(call.id);
         log.info({ callId: call.id, duration: call.duration, phone: call.externalNumber }, 'Auto-processing call');
 
         const result = await handler.processCallManual(call.id);
 
         if (result.success) {
+          handler.markCallProcessed(call.id);
           log.info({ callId: call.id, personName: result.personName, dealName: result.dealName, notes: result.notesCreated }, 'Auto-processed successfully');
           processed++;
         } else {
-          log.warn({ callId: call.id, error: result.error }, 'Auto-processing failed');
+          log.warn({ callId: call.id, error: result.error }, 'Auto-processing failed, will retry next cycle');
         }
       }
 
