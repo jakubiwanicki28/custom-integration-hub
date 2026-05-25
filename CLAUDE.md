@@ -6,9 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **DO NOT create feature branches.** Multiple agents work on this codebase simultaneously — feature branches cause conflicts and confusion. All work happens on `dev`. When ready, merge `dev` → `main` and push both. The VPS auto-deploys from `main` via `deploy/autodeploy.sh` (polls every 30s). Never push directly to `main` without merging from `dev` first.
 
-## Project
+## Project Philosophy
 
-Custom Integration Hub — coded automations deployed on a VPS, replacing n8n. Each integration is a module under `src/integrations/`. All integrations are registered in `integrations.json`.
+Custom Integration Hub — a centralized Express server that handles all business automation logic. Replaces n8n with code-based integrations deployed on a VPS.
+
+**Core idea: landing pages are dumb, the hub is smart.** Landing pages (Next.js on Vercel) contain zero business logic — they only collect user input and POST it to the hub. All CRM operations, email list syncs, booking syncs, notifications, and data transformations happen here. This means:
+
+- Adding a new LP or A/B variant requires no hub changes (just reuse existing endpoints)
+- Business logic changes are deployed once (hub) and apply to all LPs
+- LPs are interchangeable frontends — the hub is the single source of truth
+
+The hub is **multi-tenant**: multiple organizations (clients) share the same server, each with isolated API keys, CRM workspaces, and integration configs.
 
 ## Commands
 
@@ -28,73 +36,81 @@ npm run typecheck    # Type-check without emitting
 
 ```
 src/
-  server.ts                          # Express app, loads registry, mounts routes, starts pollers
-  config.ts                          # Env validation — fails fast if required vars missing
+  server.ts                          # Express app bootstrap: load orgs, mount routes, start pollers
+  config.ts                          # Env validation, per-org credential loading (prefix-based)
   dashboard.ts                       # Admin dashboard (SSR HTML, auth, rate limiting, test panels)
   lib/
     logger.ts                        # Pino logger (pretty in dev, JSON in prod)
-    registry.ts                      # Reads integrations.json, dynamic imports
+    registry.ts                      # Loads integrations.json + organizations.json, dynamic imports
+    org-context.ts                   # OrgContext type: per-org clients, config, logger
     fetch.ts                         # fetchWithTimeout wrapper (30s default, AbortController)
-    attio.ts                         # Attio CRM API client
+    attio.ts                         # Attio CRM API client (factory: createAttioClient per org)
     cloudtalk.ts                     # CloudTalk API client
     openrouter.ts                    # OpenRouter AI API client
     slack.ts                         # Slack API client (Block Kit)
   integrations/
     cloudtalk-call-notes/            # AI call notes: CloudTalk → OpenRouter → Attio
-      index.ts                       # Exports { router, startPoller }
-      routes.ts                      # POST /webhook
-      handler.ts                     # Pipeline + processCallManual for testing
-      transcribe.ts                  # Download recording → OpenRouter transcription
-      summarize.ts                   # Format note content with recording link
-      poller.ts                      # Polls CloudTalk API every 2 min for new calls
-      types.ts                       # CloudTalkWebhookPayload, ProcessedNote
     slack-lead-notifications/        # New lead alerts: Attio webhook → Slack
-      index.ts                       # Exports { router }
-      routes.ts                      # POST /webhook
-      handler.ts                     # Pipeline + processLeadManual for testing
-      types.ts                       # AttioWebhookPayload, LeadNotificationData
+    lead-intake/                     # LP form → Attio CRM + Brevo email list
+    calendly-booking-sync/           # Calendly booking → Attio deal status + date
+
+organizations.json                   # Per-org config: which integrations, with what settings
+integrations.json                    # Global integration catalog: metadata, module paths
 ```
+
+### Multi-Organization Architecture
+
+The hub serves multiple organizations (clients) from a single server. Each org is isolated:
+
+**Two-layer registration:**
+
+1. **`integrations.json`** (global catalog) — defines all available integrations: id, name, type, module path, required services. Shared across all orgs.
+2. **`organizations.json`** (per-org config) — each org picks which integrations it uses, sets status (`active`/`development`/`inactive`), and provides org-specific config (campaign IDs, CORS origins, Calendly URIs, etc.).
+
+**Env var namespacing:** Each org has an `envPrefix` (e.g., `WW`, `VELOCY`). Credentials are loaded as `{PREFIX}_ATTIO_API_KEY`, `{PREFIX}_SLACK_BOT_TOKEN`, etc. This keeps secrets isolated.
+
+**Per-org client instances:** At startup, the server creates separate Attio/Slack/CloudTalk clients for each org, bound to their API keys. An integration for WW Partners can never accidentally access Velocy's CRM.
+
+**URL pattern:** `https://custom-integration-hub.velocy.co/{orgId}/{integrationId}/{endpoint}`
+
+Examples:
+- `POST /ww-partners/lead-intake/` — lead form submission
+- `POST /ww-partners/calendly-booking-sync/notify` — Calendly booking notification
+- `POST /ww-partners/slack-lead-notifications/webhook` — Attio webhook for Slack alerts
 
 ### How the Server Boots
 
 ```
 server.ts bootstrap():
-  1. loadRegistry()           → reads integrations.json into memory
-  2. mount /dashboard         → admin panel (password-protected)
-  3. mount /health            → public JSON status endpoint
-  4. for each integration where status === "active":
-       dynamic import(entry.module)
-       app.use(entry.path, mod.router)
-  5. start pollers (cloudtalk-call-notes poller if active)
-  6. mount global error handler
-  7. app.listen(3100)
-  8. register SIGTERM handler (graceful shutdown, 30s timeout)
+  1. loadIntegrationCatalog()    → reads integrations.json (global catalog)
+  2. loadOrganizations()         → reads organizations.json (per-org config)
+  3. mount /dashboard            → admin panel (password-protected)
+  4. mount /health               → public JSON status endpoint
+  5. for each org:
+       load credentials (env prefix)
+       create API clients (attio, slack, cloudtalk)
+       for each org integration where status !== "inactive":
+         dynamic import(module)
+         build OrgContext (clients + config + logger)
+         app.use(/{orgId}/{integrationId}, router)
+  6. start pollers (cloudtalk-call-notes if active)
+  7. mount global error handler
+  8. app.listen(3100)
+  9. register SIGTERM handler (graceful shutdown, 30s timeout)
 ```
-
-### Integration Registry (`integrations.json`)
-
-Central source of truth. Server reads it at startup, mounts only `status: "active"` integrations. Health endpoint (`GET /health`) and dashboard both read from this registry.
-
-Statuses: `active` | `inactive` | `development`
-
-Types: `webhook` | `cron` | `hybrid`
 
 ### Adding a New Integration
 
 1. Create folder `src/integrations/[name]/` with `index.ts`, `routes.ts`, `handler.ts`, `types.ts`
-2. `index.ts` must export `{ router }` (Express Router)
-3. Add entry to `integrations.json` with `status: "development"`
-4. Implement `handler.ts` — follow respond-immediately-process-async pattern
-5. Export a `process[X]Manual()` function for test panel
-6. Add test panel routes in `src/dashboard.ts` under `/dashboard/test/[id]`
-7. Test locally via dashboard test panel
-8. Set to `"active"` when ready
-9. If new external service needed, add client to `src/lib/`
-10. If new env vars needed, add to both `config.ts` and `.env.example`
-
-### URL Pattern
-
-`https://custom-integration-hub.velocy.co/[integration-name]/[endpoint]`
+2. `index.ts` must export `createIntegration(ctx: OrgContext)` returning `{ router }`
+3. Add entry to `integrations.json` with module path and metadata
+4. Add to relevant orgs in `organizations.json` with `status: "development"` and config
+5. Implement `handler.ts` — follow respond-immediately-process-async pattern
+6. Export a `process[X]Manual()` function for test panel
+7. Add test panel routes in `src/dashboard.ts` under `/dashboard/test/[id]`
+8. If new external service needed, add client to `src/lib/`
+9. If new env vars needed, add to both `config.ts` and `.env.example` (with org prefix)
+10. Set to `"active"` when production-ready
 
 ### Admin Dashboard
 
@@ -115,13 +131,70 @@ When creating notes, always create TWO: one on the **Person** and one on the **D
 
 ---
 
+## Current Organizations
+
+### WW Partners (`ww-partners`, env prefix: `WW`)
+- **Attio workspace:** ww-partners
+- **Integrations:** cloudtalk-call-notes (active), slack-lead-notifications (active), lead-intake (development), calendly-booking-sync (development)
+- **Landing pages:** LP2-Akademia-Biznesu, wwp-lp-1, RAPORTLP (see Landing Pages section)
+
+### Velocy (`velocy`, env prefix: `VELOCY`)
+- **Attio workspace:** velocy-co
+- **Integrations:** slack-lead-notifications (development)
+
+---
+
+## Landing Pages
+
+Landing pages are separate Next.js projects deployed on Vercel. They live outside this repo at `/Users/v/projects-local/wwpartners-lps/`. LPs contain **no business logic** — they are forms + Calendly embeds that POST data to the hub.
+
+### WW Partners Landing Pages
+
+| LP | Repo | URL | Campaign | Calendly? |
+|---|---|---|---|---|
+| **LP2-Akademia-Biznesu** | `Velocy-co/LP2-Akademia-Biznesu` | `lp-2-akademia-biznesu.vercel.app` | `akademia` | Yes |
+| **wwp-lp-1** | `Velocy-co/wwp-lp-1` | `akademiabiznesu.vercel.app` | `akademia` | Yes |
+| **RAPORTLP** | — | `raport-akademia.vercel.app` | `raport` | No |
+
+LP2 and wwp-lp-1 are **A/B test variants** of the same Akademia Biznesu campaign — different layouts, identical data flow. RAPORTLP is a separate campaign (Raport Strategiczny) with no Calendly booking.
+
+### LP → Hub Data Flow
+
+```
+User visits LP
+    ↓
+LeadCaptureModal (form: name, email, phone)
+    ↓
+POST /{orgId}/lead-intake { firstName, lastName, email, phone, campaign }
+    ↓ (hub creates Person + Deal + List Entry in Attio, contact in Brevo)
+    ↓ (hub fires Slack notification via Attio webhook)
+    ↓
+CalendlyBookingModal (embedded iframe: calendly.com/a-wykurz/30min)
+    ↓ (user books consultation)
+    ↓ (LP detects calendly.event_scheduled, extracts event URI)
+    ↓ (4s delay)
+POST /{orgId}/calendly-booking-sync/notify { email, eventUri }
+    ↓ (hub fetches start_time from Calendly API via event URI)
+    ↓ (hub updates deal: data_konsultacji + status → "Konsultacja umówiona")
+```
+
+### LP Integration Contract
+
+When building a new LP that integrates with the hub:
+- **Form submission:** POST to `/{orgId}/lead-intake/` with `{ firstName, lastName, email, phone, campaign }`
+- **Calendly booking:** Listen for `calendly.event_scheduled` postMessage, extract `payload.event.uri`, POST to `/{orgId}/calendly-booking-sync/notify` with `{ email, eventUri }`
+- **CORS:** LP's Vercel URL must be in `allowedOrigins` in both `lead-intake` and `calendly-booking-sync` configs in `organizations.json`
+- **No business logic in the LP.** Don't query Attio, don't update CRM, don't decide deal stages. The hub does all of that.
+
+---
+
 ## Existing Integrations
 
 ### 1. CloudTalk Call Notes (`cloudtalk-call-notes`)
 
 **Type:** hybrid (webhook + polling)
 **Trigger:** CloudTalk call ends → poller picks it up every 2 min (also accepts direct webhook POST)
-**Path:** `/cloudtalk-call-notes`
+**Path:** `/{orgId}/cloudtalk-call-notes`
 
 **Pipeline:**
 1. New call detected (via poller or webhook)
@@ -138,17 +211,11 @@ When creating notes, always create TWO: one on the **Person** and one on the **D
 
 **Test panel:** `/dashboard/test/cloudtalk-call-notes` — paginated call list (5/page), "Przetwórz" button per call.
 
-**Key files:**
-- `handler.ts` — `webhookHandler()` (async) + `processCallManual()` (returns result)
-- `transcribe.ts` — 5s wait + 15s retry for recording availability
-- `summarize.ts` — formatNote() with recording link
-- `poller.ts` — `startPoller()`, called from server.ts
-
 ### 2. Slack Lead Notifications (`slack-lead-notifications`)
 
 **Type:** webhook
 **Trigger:** Attio webhook fires when new entry added to campaign list
-**Path:** `/slack-lead-notifications`
+**Path:** `/{orgId}/slack-lead-notifications`
 
 **Pipeline:**
 1. Receive Attio webhook (`list-entry.created` event)
@@ -157,30 +224,73 @@ When creating notes, always create TWO: one on the **Person** and one on the **D
 4. Format Slack Block Kit message (person name, email, phone, "Open in Attio" button)
 5. Post to mapped Slack channel based on list ID
 
-**List → Channel mapping (hardcoded in handler.ts):**
-- Kampania: Akademia Biznesu → `#nowe-leady-akademia`
-- Kampania: Raport Strategiczny → `#nowe-leady-raport`
+**List → Channel mapping (in organizations.json config per org):**
+- WW Partners: Akademia Biznesu → `#nowe-leady-akademia`, Raport Strategiczny → `#nowe-leady-raport`
 
-**Test panel:** `/dashboard/test/slack-lead-notifications` — lists recent entries from both campaigns, manual send button, Slack connection test, webhook registration/deletion UI.
+### 3. Lead Intake (`lead-intake`)
+
+**Type:** webhook
+**Trigger:** LP form submission (cross-origin POST)
+**Path:** `/{orgId}/lead-intake`
+
+**Pipeline:**
+1. Validate input (email, phone, campaign, name)
+2. Normalize phone to E.164 format (+48...)
+3. Upsert Person in Attio (find by email, create if missing)
+4. Create Deal (name: `"{dealPrefix} — {firstName} {lastName}"`, linked to person)
+5. Add entry to campaign list (with initial stage status)
+6. Send contact to Brevo email list (fire-and-forget, degrades gracefully if no API key)
+
+**Campaign config** (per org in `organizations.json`): maps campaign slug (e.g., `"akademia"`) to list ID, status slug, initial stage ID, deal prefix, and Brevo list ID.
+
+**Rate limiting:** 10 requests/IP/minute.
+
+### 4. Calendly Booking Sync (`calendly-booking-sync`)
+
+**Type:** webhook
+**Trigger:** LP frontend notifies after user books Calendly consultation
+**Path:** `/{orgId}/calendly-booking-sync`
+
+**Endpoints:**
+- `POST /webhook` — Calendly native webhook (signature-verified, for paid plans)
+- `POST /notify` — LP frontend notification (CORS-protected, for free plan)
+
+**Pipeline:**
+1. Receive notification with `{ email, eventUri }`
+2. Fetch booking `start_time` from Calendly API:
+   - **Primary:** Direct event URI lookup (`GET /scheduled_events/{uuid}`) — instant, reliable
+   - **Fallback:** Search by `invitee_email` with retry (10s initial wait, 3 retries with 10s/15s delays)
+   - **Last resort:** Fetch recent events without email filter, match by `created_at` recency
+3. If no `start_time` found → skip update, clear idempotency key (allow retry later)
+4. Find Person in Attio by email → get associated deals
+5. For each deal with campaign list entry:
+   - Set `data_konsultacji` on deal
+   - Update list entry status to "Konsultacja umówiona" + set `data_konsultacji`
+
+**Calendly account:** The Calendly scheduling URL is `calendly.com/a-wykurz/30min` (user: Anna Wykurz, `a.wykurz@gmail.com`). The API token and `calendlyUserUri` in config MUST match this account. There is a separate `kontakt-wwpartners` Calendly account that is NOT used for LP bookings — do not confuse them.
+
+**Idempotency:** Key = `notify:{email}` with 1h TTL. Cleared if booking time not found (allows retry).
 
 ---
 
 ## External Services
 
-- **Attio CRM** — primary CRM. Schema in `docs/attio-crm-map.md`. Objects: People, Deals, Companies. Notes API (markdown). Webhook API for list-entry events. Auth: Bearer token.
+- **Attio CRM** — primary CRM. Schema in `docs/attio-crm-map.md`. Objects: People, Deals, Companies. Notes API (markdown). Webhook API for list-entry events. Auth: Bearer token. **Per-org instances.**
 - **CloudTalk** — call center. Recordings, call history. Auth: HTTP Basic (API_ID:API_KEY). API base: `https://my.cloudtalk.io/api`. No direct call ID lookup — batch fetch + filter.
-- **OpenRouter** — AI gateway, OpenAI-compatible. Multimodal models for audio transcription. Model configurable via `OPENROUTER_MODEL` env var (default: `google/gemini-2.5-flash-lite`). 120s timeout for audio processing.
-- **Slack** — notifications via Bot token. Block Kit formatting. Auth: Bearer token (`xoxb-...`).
+- **OpenRouter** — AI gateway, OpenAI-compatible. Multimodal models for audio transcription. Model configurable via `OPENROUTER_MODEL` env var (default: `google/gemini-2.5-flash-lite`). 120s timeout for audio processing. **Shared across orgs.**
+- **Slack** — notifications via Bot token. Block Kit formatting. Auth: Bearer token (`xoxb-...`). **Per-org instances.**
+- **Calendly** — consultation booking. Free plan (no native webhooks). LP embeds Calendly inline, detects booking via postMessage, notifies hub. API: Personal Access Token, `GET /scheduled_events`. **Per-org config in organizations.json.**
+- **Brevo** — email marketing lists. Contacts API. Auth: API key in `api-key` header. **Per-org env var.**
 
 ## Shared Library (`src/lib/`)
 
 All API clients use `fetchWithTimeout()` from `src/lib/fetch.ts` (30s default, 120s for OpenRouter).
 
-**Attio** (`attio.ts`): `findPersonByPhone`, `findPersonByEmail`, `getPersonDetails`, `getDealDetails`, `pickBestDeal`, `createNote`, `queryListEntries`, `registerWebhook`, `listWebhooks`, `deleteWebhook`, plus helper extractors (`getPersonName`, `getPersonEmail`, `getPersonPhone`, `getDealName`, `getDealStage`).
+**Attio** (`attio.ts`): Factory `createAttioClient(apiKey, log)`. Methods: `findPersonByPhone`, `findPersonByEmail`, `upsertPerson`, `getPersonDetails`, `getDealDetails`, `pickBestDeal`, `createDeal`, `createNote`, `queryListEntries`, `addListEntry`, `updateDealValues`, `updateListEntry`, `findListEntriesByDeal`, `registerWebhook`, `listWebhooks`, `deleteWebhook`, `getAssociatedDealIds`, plus helper extractors.
 
-**CloudTalk** (`cloudtalk.ts`): `getCallDetails` (batch fetch + find by ID), `getRecentCalls` (paginated), `getCallsSince` (date filter for poller), `downloadRecording` (WAV buffer).
+**CloudTalk** (`cloudtalk.ts`): `getCallDetails`, `getRecentCalls`, `getCallsSince`, `downloadRecording`.
 
-**OpenRouter** (`openrouter.ts`): `transcribeAudio`, `summarizeTranscript`, `transcribeAndSummarize` (single-pass audio → transcript + summary). Polish-language system prompts.
+**OpenRouter** (`openrouter.ts`): `transcribeAudio`, `summarizeTranscript`, `transcribeAndSummarize`. Polish-language system prompts.
 
 **Slack** (`slack.ts`): `postMessage` (Block Kit blocks), `testConnection`.
 
@@ -190,10 +300,15 @@ All API clients use `fetchWithTimeout()` from `src/lib/fetch.ts` (30s default, 1
 
 `.env` file (git-ignored). On VPS, created manually. Keep `.env.example` updated.
 
-Required: `ATTIO_API_KEY`, `CLOUDTALK_API_ID`, `CLOUDTALK_API_KEY`, `OPENROUTER_API_KEY`
-Optional: `SLACK_BOT_TOKEN`, `DASHBOARD_PASSWORD`, `DASHBOARD_SECRET`, `ATTIO_WEBHOOK_SECRET`, `WEBHOOK_SECRET`, `OPENROUTER_MODEL`, `PORT`, `NODE_ENV`
+**Per-org (prefixed):**
+- `{PREFIX}_ATTIO_API_KEY` (required for any org)
+- `{PREFIX}_ATTIO_WEBHOOK_SECRET`, `{PREFIX}_SLACK_BOT_TOKEN`, `{PREFIX}_CLOUDTALK_API_ID`, `{PREFIX}_CLOUDTALK_API_KEY`, `{PREFIX}_BREVO_API_KEY`, `{PREFIX}_CALENDLY_API_TOKEN`, `{PREFIX}_CALENDLY_WEBHOOK_SECRET`
 
-New env vars that are needed by active integrations should use `requireEnv()`. Optional vars (features that degrade gracefully) should use `process.env.X || ''`.
+**Shared:**
+- `OPENROUTER_API_KEY` (required)
+- `DASHBOARD_PASSWORD`, `DASHBOARD_SECRET`, `OPENROUTER_MODEL`, `PORT`, `NODE_ENV`
+
+New env vars should use the org prefix pattern. Required vars use `requireEnv()`, optional use `process.env.X || ''`.
 
 ## Deployment
 
@@ -253,7 +368,10 @@ Check `src/lib/` before making raw fetch calls. Add new functions to existing cl
 **New external service = new client in `src/lib/`:**
 Follow the pattern: config from `config.ts`, typed interfaces, exported async functions, child logger.
 
-**New env vars in both `.env.example` and `config.ts`.**
+**New env vars in both `.env.example` and `config.ts` with org prefix.**
+
+**LPs are dumb:**
+Never add CRM logic, stage decisions, or data transformations to landing pages. LPs POST raw user input to hub endpoints. The hub decides what to do.
 
 ## CRM Reference
 
