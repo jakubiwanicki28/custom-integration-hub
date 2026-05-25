@@ -92,7 +92,8 @@ export function createCloudTalkClient(apiId: string, apiKey: string, log: Logger
   const headers = { Authorization: `Basic ${basicAuth}` };
 
   async function getCallDetails(callId: string): Promise<CloudTalkCall | null> {
-    const url = `${BASE_URL}/calls/index.json?limit=100`;
+    const lookback = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const url = `${BASE_URL}/calls/index.json?limit=200&date_from=${lookback}`;
     const res = await fetchWithTimeout(url, { headers });
 
     if (!res.ok) {
