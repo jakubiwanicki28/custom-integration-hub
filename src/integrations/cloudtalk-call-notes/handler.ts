@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express';
-import type { Logger } from 'pino';
 import { getPersonName, getDealName } from '../../lib/attio.js';
-import type { OrgContext, AttioClient, CloudTalkClient } from '../../lib/org-context.js';
+import type { OrgContext } from '../../lib/org-context.js';
 import type { CloudTalkCall } from '../../lib/cloudtalk.js';
 import { formatNote } from './summarize.js';
 import type { CloudTalkWebhookPayload } from './types.js';
