@@ -152,7 +152,7 @@ Landing pages are separate projects deployed on Vercel. They live outside this r
 /Users/v/landing-pages/
   ww-partners/
     lp-akademia-a/              # A/B variant A (akademiabiznesu.vercel.app)
-    lp-akademia-b/              # A/B variant B (lp-2-akademia-biznesu.vercel.app)
+    lp-akademia-b/              # A/B variant B (akademiabiznesup2.vercel.app)
     lp-raport/                  # Raport Strategiczny (raport-akademia.vercel.app)
   velocy/
     lp-service-a/               # A/B variant A (Velocy service LP)
@@ -165,7 +165,7 @@ Landing pages are separate projects deployed on Vercel. They live outside this r
 | Local folder | GitHub repo | Vercel URL | Campaign | Calendly? |
 |---|---|---|---|---|
 | `lp-akademia-a` | `Velocy-co/wwp-lp-1` | `akademiabiznesu.vercel.app` | `akademia` | Yes |
-| `lp-akademia-b` | `Velocy-co/LP2-Akademia-Biznesu` | `lp-2-akademia-biznesu.vercel.app` | `akademia` | Yes |
+| `lp-akademia-b` | `Velocy-co/LP2-Akademia-Biznesu` | `akademiabiznesup2.vercel.app` | `akademia` | Yes |
 | `lp-raport` | `Velocy-co/RAPORTLP` | `raport-akademia.vercel.app` | `raport` | No |
 
 ### Velocy Landing Pages

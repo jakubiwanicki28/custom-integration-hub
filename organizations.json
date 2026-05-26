@@ -42,7 +42,7 @@
             "calendlyUserUri": "https://api.calendly.com/users/1fabf369-1006-41bd-a4be-58911a894f0b",
             "allowedOrigins": [
               "https://akademiabiznesu.vercel.app",
-              "https://lp-2-akademia-biznesu.vercel.app",
+              "https://akademiabiznesup2.vercel.app",
               "http://localhost:3000",
               "http://localhost:3001"
             ]
@@ -72,7 +72,7 @@
             "dealStageLeadId": "2abf780a-98ed-47d2-9a83-3e9e31aa6762",
             "allowedOrigins": [
               "https://akademiabiznesu.vercel.app",
-              "https://lp-2-akademia-biznesu.vercel.app",
+              "https://akademiabiznesup2.vercel.app",
               "https://raport-akademia.vercel.app",
               "http://localhost:3000",
               "http://localhost:3001"
