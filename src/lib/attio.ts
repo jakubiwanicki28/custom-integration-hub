@@ -225,7 +225,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       log.error(
         { status: res.status, parentObject: params.parentObject, parentRecordId: params.parentRecordId, errorBody },
         'Failed to create note',
@@ -264,7 +264,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       log.error({ status: res.status, errorBody }, 'Failed to register webhook');
       return null;
     }
@@ -317,7 +317,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       // Retry without phone if Attio rejects it
       if (res.status === 400 && errorBody.includes('phone_number') && data.phone) {
         log.warn({ email: data.email, phone: data.phone }, 'Phone rejected by Attio, retrying without phone');
@@ -357,7 +357,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       log.error({ status: res.status, dealName: data.name, errorBody }, 'Failed to create deal');
       return null;
     }
@@ -381,7 +381,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       log.error({ status: res.status, listId, dealRecordId, errorBody }, 'Failed to add list entry');
       return null;
     }
@@ -399,7 +399,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       log.error({ status: res.status, dealRecordId, errorBody }, 'Failed to update deal values');
       return false;
     }
@@ -414,7 +414,7 @@ export function createAttioClient(apiKey: string, log: Logger): AttioClient {
     });
 
     if (!res.ok) {
-      const errorBody = await safeText(res);
+      const errorBody = (await safeText(res)).slice(0, 200);
       log.error({ status: res.status, listId, entryId, errorBody }, 'Failed to update list entry');
       return false;
     }

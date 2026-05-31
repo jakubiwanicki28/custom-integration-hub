@@ -42,14 +42,14 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
 
   // --- Core processing logic (single code path for all entry points) ---
 
-  async function processCallCore(call: CloudTalkCall, phoneOverride?: string): Promise<ProcessResult> {
+  async function processCallCore(call: CloudTalkCall): Promise<ProcessResult> {
     const callId = call.id;
 
     if (call.duration < MIN_CALL_DURATION) {
       return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };
     }
 
-    const phoneNumber = phoneOverride || call.externalNumber;
+    const phoneNumber = call.externalNumber;
     if (!phoneNumber) return { success: false, error: 'Brak numeru telefonu' };
 
     let person = await attio.findPersonByPhone(phoneNumber);
@@ -150,7 +150,7 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
         return;
       }
 
-      const result = await processCallCore(call, payload.phone_number);
+      const result = await processCallCore(call);
 
       if (result.success) {
         markCallProcessed(callId);

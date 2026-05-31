@@ -30,7 +30,7 @@ export function createHandler(ctx: OrgContext) {
     const phone = String(b.phone ?? '').trim();
     const campaign = String(b.campaign ?? '').trim();
 
-    if (!email || !email.includes('@')) return { error: 'Valid email is required' };
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Valid email is required' };
     if (!phone) return { error: 'Phone is required' };
     if (!campaign || !campaigns[campaign]) return { error: `Unknown campaign: ${campaign}` };
 

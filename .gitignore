@@ -1,7 +1,21 @@
 node_modules/
 dist/
 logs/
+
+# Environment & secrets
 .env
+.env.local
+.env.*.local
+.env.production
+*.pem
+*.key
+*.crt
+.npmrc
+
+# OS
 .DS_Store
+Thumbs.db
 
-
+# IDE
+.vscode/
+.idea/

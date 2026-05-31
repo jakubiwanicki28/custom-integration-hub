@@ -12,6 +12,7 @@
   "dependencies": {
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "helmet": "^8.2.0",
     "pino": "^9.6.0"
   },
   "devDependencies": {

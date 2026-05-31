@@ -160,8 +160,7 @@ export function createCloudTalkClient(apiId: string, apiKey: string, log: Logger
 
     const contentType = res.headers.get('content-type') ?? '';
     if (contentType.includes('json')) {
-      const body = await safeJson(res);
-      log.warn({ callId, body }, 'Recording endpoint returned JSON instead of audio');
+      log.warn({ callId }, 'Recording endpoint returned JSON instead of audio');
       return null;
     }
 

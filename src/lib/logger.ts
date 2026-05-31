@@ -3,6 +3,13 @@ import { config } from '../config.js';
 
 export const logger = pino({
   level: config.isDev ? 'debug' : 'info',
+  redact: {
+    paths: [
+      'email', '*.email', 'phone', '*.phone',
+      'req.headers.authorization', 'req.headers.cookie',
+    ],
+    censor: '[REDACTED]',
+  },
   ...(config.isDev && {
     transport: {
       target: 'pino-pretty',

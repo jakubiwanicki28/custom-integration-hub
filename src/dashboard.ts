@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, randomBytes } from 'crypto';
 import { config } from './config.js';
 import {
   getAllOrganizations, getMountedIntegration, getMountedIntegrationsForOrg,
@@ -55,6 +55,48 @@ function clearAttempts(ip: string): void {
   loginAttempts.delete(ip);
 }
 
+// --- CSRF Protection (double-submit cookie) ---
+
+function generateCsrfToken(): string {
+  return randomBytes(24).toString('hex');
+}
+
+function getCsrfCookie(req: Request): string | undefined {
+  const header = req.headers.cookie || '';
+  const match = header.match(/csrf_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : undefined;
+}
+
+function verifyCsrf(req: Request): boolean {
+  const cookieToken = getCsrfCookie(req);
+  const bodyToken = req.body?._csrf;
+  if (!cookieToken || !bodyToken) return false;
+  if (cookieToken.length !== bodyToken.length) return false;
+  return timingSafeEqual(Buffer.from(cookieToken), Buffer.from(bodyToken));
+}
+
+function setCsrfCookie(res: Response): string {
+  const token = generateCsrfToken();
+  res.cookie('csrf_token', token, {
+    httpOnly: false, // JS needs to read it for forms — but we use hidden field instead, so this is just the cookie half
+    secure: !config.isDev, sameSite: 'strict',
+    path: '/dashboard', maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+  return token;
+}
+
+// --- Session Blacklist (server-side invalidation) ---
+
+const sessionBlacklist = new Map<string, number>();
+const blacklistCleanup = setInterval(() => {
+  const now = Date.now();
+  const maxAge = 7 * 24 * 60 * 60 * 1000;
+  for (const [token, ts] of sessionBlacklist) {
+    if (now - ts > maxAge) sessionBlacklist.delete(token);
+  }
+}, 60 * 60 * 1000);
+blacklistCleanup.unref();
+
 // --- Cookie Auth ---
 
 function signToken(timestamp: number): string {
@@ -62,6 +104,7 @@ function signToken(timestamp: number): string {
 }
 
 function verifyToken(token: string): boolean {
+  if (sessionBlacklist.has(token)) return false;
   const dot = token.indexOf('.');
   if (dot === -1) return false;
   const timestamp = parseInt(token.slice(0, dot), 10);
@@ -103,11 +146,12 @@ dashboardRouter.get('/', (req: Request, res: Response) => {
     return;
   }
 
+  const csrfToken = setCsrfCookie(res);
   const orgs = getAllOrganizations();
   const selectedOrgId = (req.query.org as string) || orgs[0]?.id || '';
   const mounted = getMountedIntegrationsForOrg(selectedOrgId);
 
-  res.send(renderDashboardPage({ uptime: process.uptime(), orgs, selectedOrgId, mounted }));
+  res.send(renderDashboardPage({ uptime: process.uptime(), orgs, selectedOrgId, mounted, csrfToken }));
 });
 
 dashboardRouter.post('/login', (req: Request, res: Response) => {
@@ -131,10 +175,24 @@ dashboardRouter.post('/login', (req: Request, res: Response) => {
   res.redirect(303, '/dashboard');
 });
 
-dashboardRouter.post('/logout', (_req: Request, res: Response) => {
+dashboardRouter.post('/logout', (req: Request, res: Response) => {
+  if (!requireCsrf(req, res)) return;
+  const token = getSessionCookie(req);
+  if (token) sessionBlacklist.set(token, Date.now());
   res.clearCookie('dashboard_session', { path: '/dashboard' });
+  res.clearCookie('csrf_token', { path: '/dashboard' });
   res.redirect(303, '/dashboard');
 });
+
+// --- CSRF enforcement for authenticated POST actions ---
+
+function requireCsrf(req: Request, res: Response): boolean {
+  if (!verifyCsrf(req)) {
+    res.status(403).send('CSRF token invalid. Please reload the page and try again.');
+    return false;
+  }
+  return true;
+}
 
 // --- Dynamic Test Panel Routes ---
 
@@ -146,6 +204,7 @@ function param(req: Request, name: string): string {
 // GET /test/:orgId/cloudtalk-call-notes
 dashboardRouter.get('/test/:orgId/cloudtalk-call-notes', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const csrfToken = setCsrfCookie(res);
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'cloudtalk-call-notes');
   if (!mounted?.ctx.clients.cloudtalk) {
@@ -157,16 +216,17 @@ dashboardRouter.get('/test/:orgId/cloudtalk-call-notes', async (req: Request, re
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
     const result = req.query.result as string | undefined;
     const callsPage = await mounted.ctx.clients.cloudtalk.getRecentCalls(5, page);
-    res.send(renderTestPanel(orgId, callsPage.calls, callsPage.currentPage, callsPage.totalPages, result));
+    res.send(renderTestPanel(orgId, callsPage.calls, callsPage.currentPage, callsPage.totalPages, result, csrfToken));
   } catch (err) {
     log.error({ err, path: req.path }, 'Dashboard route error');
-    res.send(renderTestPanel(orgId, [], 1, 0, 'error:' + (err instanceof Error ? err.message : 'Błąd połączenia z CloudTalk')));
+    res.send(renderTestPanel(orgId, [], 1, 0, 'error:' + (err instanceof Error ? err.message : 'Błąd połączenia z CloudTalk'), csrfToken));
   }
 });
 
 // POST /test/:orgId/cloudtalk-call-notes/process
 dashboardRouter.post('/test/:orgId/cloudtalk-call-notes/process', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'cloudtalk-call-notes');
   const redirectBase = `/dashboard/test/${orgId}/cloudtalk-call-notes`;
@@ -190,6 +250,7 @@ dashboardRouter.post('/test/:orgId/cloudtalk-call-notes/process', async (req: Re
 // GET /test/:orgId/slack-lead-notifications
 dashboardRouter.get('/test/:orgId/slack-lead-notifications', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const csrfToken = setCsrfCookie(res);
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'slack-lead-notifications');
   if (!mounted) { res.redirect('/dashboard?org=' + orgId); return; }
@@ -224,12 +285,13 @@ dashboardRouter.get('/test/:orgId/slack-lead-notifications', async (req: Request
     loadError = err instanceof Error ? err.message : 'Błąd ładowania danych';
   }
 
-  res.send(renderSlackLeadPanel(orgId, entryGroups, slackStatus, webhook, listChannelMap, result, loadError));
+  res.send(renderSlackLeadPanel(orgId, entryGroups, slackStatus, webhook, listChannelMap, result, loadError, csrfToken));
 });
 
 // POST /test/:orgId/slack-lead-notifications/send
 dashboardRouter.post('/test/:orgId/slack-lead-notifications/send', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'slack-lead-notifications');
   const redirectBase = `/dashboard/test/${orgId}/slack-lead-notifications`;
@@ -254,6 +316,7 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/send', async (req: R
 // POST /test/:orgId/slack-lead-notifications/reset-webhook
 dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'slack-lead-notifications');
   const redirectBase = `/dashboard/test/${orgId}/slack-lead-notifications`;
@@ -269,7 +332,7 @@ dashboardRouter.post('/test/:orgId/slack-lead-notifications/reset-webhook', asyn
       if (existing) await attio.deleteWebhook(existing.id.webhook_id);
     } catch { /* continue */ }
 
-    const targetUrl = `https://custom-integration-hub.velocy.co/${orgId}/slack-lead-notifications/webhook`;
+    const targetUrl = `${config.webhookBaseUrl}/${orgId}/slack-lead-notifications/webhook`;
     const listIds = Array.from(listChannelMap.keys());
 
     if (listIds.length === 0) {
@@ -305,6 +368,7 @@ dashboardRouter.get('/test/:orgId/lead-intake', (req: Request, res: Response) =>
 // GET /test/:orgId/calendly-booking-sync
 dashboardRouter.get('/test/:orgId/calendly-booking-sync', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const csrfToken = setCsrfCookie(res);
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'calendly-booking-sync');
   if (!mounted) { res.redirect('/dashboard?org=' + orgId); return; }
@@ -326,12 +390,13 @@ dashboardRouter.get('/test/:orgId/calendly-booking-sync', async (req: Request, r
     loadError = err instanceof Error ? err.message : 'Błąd ładowania danych';
   }
 
-  res.send(renderCalendlySyncPanel(orgId, entryGroups, result, loadError));
+  res.send(renderCalendlySyncPanel(orgId, entryGroups, result, loadError, csrfToken));
 });
 
 // POST /test/:orgId/calendly-booking-sync/sync
 dashboardRouter.post('/test/:orgId/calendly-booking-sync/sync', async (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
   const orgId = param(req, 'orgId');
   const mounted = getMountedIntegration(orgId, 'calendly-booking-sync');
   const redirectBase = `/dashboard/test/${orgId}/calendly-booking-sync`;
@@ -533,6 +598,7 @@ function renderDashboardPage(data: {
   orgs: import('./lib/org-context.js').OrganizationEntry[];
   selectedOrgId: string;
   mounted: MountedIntegration[];
+  csrfToken: string;
 }): string {
   const uptime = formatUptime(data.uptime);
   const active = data.mounted.filter(m => m.status === 'active').length;
@@ -577,6 +643,7 @@ function renderDashboardPage(data: {
         </select>
       </div>
       <form method="POST" action="/dashboard/logout" style="display:inline">
+        <input type="hidden" name="_csrf" value="${data.csrfToken}">
         <button type="submit" class="logout-btn">Wyloguj</button>
       </form>
     </header>
@@ -600,7 +667,7 @@ function renderFlash(resultParam?: string): string {
   return `<div class="flash ${isError ? 'flash-error' : 'flash-ok'}">${isError ? 'Błąd: ' : 'Sukces: '}${escapeHtml(message)}</div>`;
 }
 
-function renderTestPanel(orgId: string, calls: CloudTalkCall[], currentPage: number, totalPages: number, resultParam?: string): string {
+function renderTestPanel(orgId: string, calls: CloudTalkCall[], currentPage: number, totalPages: number, resultParam?: string, csrfToken?: string): string {
   const safeOrgId = encodeURIComponent(orgId);
   const basePath = `/dashboard/test/${safeOrgId}/cloudtalk-call-notes`;
 
@@ -612,7 +679,7 @@ function renderTestPanel(orgId: string, calls: CloudTalkCall[], currentPage: num
     return `<tr>
       <td>${dateStr}</td><td><code>${escapeHtml(c.externalNumber)}</code></td><td>${dir}</td><td>${dur}</td><td>${escapeHtml(c.agentName)}</td>
       <td>${c.recorded ? '<span style="color:#3fb950">Tak</span>' : '<span style="color:#484f58">Nie</span>'}</td>
-      <td><form method="POST" action="${basePath}/process" style="display:inline"><input type="hidden" name="call_id" value="${c.id}"><button type="submit" class="btn-process">Przetwórz</button></form></td>
+      <td><form method="POST" action="${basePath}/process" style="display:inline"><input type="hidden" name="_csrf" value="${csrfToken ?? ''}"><input type="hidden" name="call_id" value="${c.id}"><button type="submit" class="btn-process">Przetwórz</button></form></td>
     </tr>`;
   }).join('');
 
@@ -645,6 +712,7 @@ function renderSlackLeadPanel(
   listChannelMap: Map<string, ChannelMapping>,
   resultParam?: string,
   loadError?: string,
+  csrfToken?: string,
 ): string {
   const safeOrgId = encodeURIComponent(orgId);
   const basePath = `/dashboard/test/${safeOrgId}/slack-lead-notifications`;
@@ -655,17 +723,19 @@ function renderSlackLeadPanel(
   const slackDot = slackStatus.ok ? 'status-dot-ok' : 'status-dot-error';
   const slackLabel = slackStatus.ok ? `Połączono (${escapeHtml(slackStatus.team ?? '?')})` : `Brak połączenia (${escapeHtml(slackStatus.error ?? '?')})`;
 
+  const csrfField = `<input type="hidden" name="_csrf" value="${csrfToken ?? ''}">`;
+
   let webhookDot: string, webhookLabel: string, webhookAction: string;
   if (!webhook) {
     webhookDot = 'status-dot-none'; webhookLabel = 'Niezarejestrowany';
-    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action">Zarejestruj</button></form>`;
+    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline">${csrfField}<button type="submit" class="btn-action">Zarejestruj</button></form>`;
   } else if (webhook.status === 'active') {
     webhookDot = 'status-dot-ok'; webhookLabel = `Aktywny <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
-    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action-subtle">Zarejestruj ponownie</button></form>`;
+    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline">${csrfField}<button type="submit" class="btn-action-subtle">Zarejestruj ponownie</button></form>`;
   } else {
     webhookDot = webhook.status === 'degraded' ? 'status-dot-warn' : 'status-dot-error';
     webhookLabel = `${escapeHtml(webhook.status)} <code>${escapeHtml(webhook.id.webhook_id.slice(0, 8))}...</code>`;
-    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline"><button type="submit" class="btn-action">Usuń i zarejestruj ponownie</button></form>`;
+    webhookAction = `<form method="POST" action="${basePath}/reset-webhook" style="display:inline">${csrfField}<button type="submit" class="btn-action">Usuń i zarejestruj ponownie</button></form>`;
   }
 
   const groupHtml = entryGroups.map(g => {
@@ -675,7 +745,7 @@ function renderSlackLeadPanel(
         const date = new Date(e.createdAt);
         const dateStr = date.toLocaleDateString('pl-PL') + ' ' + date.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
         return `<tr><td>${dateStr}</td><td>${escapeHtml(e.dealName)}</td><td>${escapeHtml(e.personName)}</td><td>${escapeHtml(e.stage)}</td>
-        <td><form method="POST" action="${basePath}/send" style="display:inline"><input type="hidden" name="deal_record_id" value="${escapeHtml(e.dealRecordId)}"><input type="hidden" name="list_id" value="${escapeHtml(e.listId)}"><button type="submit" class="btn-process">Wyślij na Slacka</button></form></td></tr>`;
+        <td><form method="POST" action="${basePath}/send" style="display:inline">${csrfField}<input type="hidden" name="deal_record_id" value="${escapeHtml(e.dealRecordId)}"><input type="hidden" name="list_id" value="${escapeHtml(e.listId)}"><button type="submit" class="btn-process">Wyślij na Slacka</button></form></td></tr>`;
       }).join('');
 
     return `<div class="section-card">
@@ -705,6 +775,7 @@ function renderCalendlySyncPanel(
   entryGroups: Array<{ listId: string; listName: string; entries: LeadEntry[] }>,
   resultParam?: string,
   loadError?: string,
+  csrfToken?: string,
 ): string {
   const safeOrgId = encodeURIComponent(orgId);
   const basePath = `/dashboard/test/${safeOrgId}/calendly-booking-sync`;
@@ -721,7 +792,7 @@ function renderCalendlySyncPanel(
         const emailVal = e.email ?? '';
         return `<tr><td>${dateStr}</td><td>${escapeHtml(e.dealName)}</td><td>${escapeHtml(e.personName)}</td><td>${emailVal ? escapeHtml(emailVal) : '<span style="color:#484f58">brak</span>'}</td><td>${escapeHtml(e.stage)}</td>
         <td>${emailVal
-          ? `<form method="POST" action="${basePath}/sync" style="display:inline"><input type="hidden" name="email" value="${escapeHtml(emailVal)}"><button type="submit" class="btn-process">Sync</button></form>`
+          ? `<form method="POST" action="${basePath}/sync" style="display:inline"><input type="hidden" name="_csrf" value="${csrfToken ?? ''}"><input type="hidden" name="email" value="${escapeHtml(emailVal)}"><button type="submit" class="btn-process">Sync</button></form>`
           : ''}</td></tr>`;
       }).join('');
 
@@ -738,6 +809,7 @@ function renderCalendlySyncPanel(
     <div class="section-card">
       <div class="section-title">Ręczny sync po emailu</div>
       <form method="POST" action="${basePath}/sync" style="display:flex;gap:8px;align-items:center">
+        <input type="hidden" name="_csrf" value="${csrfToken ?? ''}">
         <input type="email" name="email" placeholder="Email leada" required style="flex:1;padding:8px 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:14px">
         <button type="submit" class="btn-action">Synchronizuj</button>
       </form>

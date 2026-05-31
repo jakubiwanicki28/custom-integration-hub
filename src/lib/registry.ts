@@ -114,6 +114,12 @@ export async function importIntegrationModule(entry: IntegrationCatalogEntry): P
     modulePath = modulePath.replace('/src/', '/dist/');
   }
 
+  // Path traversal protection: module must resolve within integrations directory
+  const allowedBase = resolve(process.cwd(), process.env.NODE_ENV === 'production' ? 'dist/integrations' : 'src/integrations');
+  if (!modulePath.startsWith(allowedBase)) {
+    throw new Error(`Integration module path "${entry.module}" resolves outside allowed directory`);
+  }
+
   const mod = await import(modulePath);
   if (typeof mod.createIntegration !== 'function') {
     throw new Error(`Integration module ${entry.id} does not export createIntegration()`);

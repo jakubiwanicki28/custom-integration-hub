@@ -1,10 +1,10 @@
 import express from 'express';
+import helmet from 'helmet';
 import { config, loadOrgCredentials } from './config.js';
 import { logger } from './lib/logger.js';
 import {
   loadIntegrationCatalog, loadOrganizations, getAllOrganizations,
   getCatalogEntry, importIntegrationModule, registerMountedIntegration,
-  getAllMountedIntegrations,
 } from './lib/registry.js';
 import { createAttioClient } from './lib/attio.js';
 import { createSlackClient } from './lib/slack.js';
@@ -14,6 +14,19 @@ import type { OrgContext } from './lib/org-context.js';
 
 const app = express();
 app.set('trust proxy', 1);
+
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"], // Dashboard uses inline styles
+      scriptSrc: ["'self'", "'unsafe-inline'"], // Dashboard uses inline onclick
+      imgSrc: ["'self'", "data:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Allow cross-origin API calls
+}));
 
 app.use(express.json({
   limit: '2mb',
@@ -28,33 +41,13 @@ app.use((req, _res, next) => {
   next();
 });
 
-// Health endpoint — shows all orgs and their integrations
+// Health endpoint — minimal public info (detailed status behind /dashboard auth)
 app.get('/health', (_req, res) => {
-  const mounted = getAllMountedIntegrations();
-  const orgs = getAllOrganizations();
-
   res.json({
     status: 'ok',
     uptime: Math.round(process.uptime()),
-    organizations: orgs.map(org => ({
-      id: org.id,
-      name: org.name,
-      integrations: mounted
-        .filter(m => m.orgId === org.id)
-        .map(m => ({
-          id: m.integrationId,
-          name: m.catalogEntry.name,
-          status: m.status,
-          type: m.catalogEntry.type,
-          path: `/${org.id}${getIntegrationPath(m.integrationId)}`,
-        })),
-    })),
   });
 });
-
-function getIntegrationPath(integrationId: string): string {
-  return `/${integrationId}`;
-}
 
 async function bootstrap() {
   // Load both config files

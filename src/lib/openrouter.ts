@@ -41,7 +41,7 @@ async function chatCompletion(
   }, 120_000); // 2 min timeout — audio transcription can be slow
 
   if (!res.ok) {
-    const errorBody = await safeText(res);
+    const errorBody = (await safeText(res)).slice(0, 200);
     log.error({ model, status: res.status, errorBody }, 'OpenRouter request failed');
     return null;
   }

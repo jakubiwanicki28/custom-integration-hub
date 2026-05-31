@@ -42,9 +42,7 @@
             "calendlyUserUri": "https://api.calendly.com/users/1fabf369-1006-41bd-a4be-58911a894f0b",
             "allowedOrigins": [
               "https://akademiabiznesu.vercel.app",
-              "https://akademiabiznesup2.vercel.app",
-              "http://localhost:3000",
-              "http://localhost:3001"
+              "https://akademiabiznesup2.vercel.app"
             ]
           }
         },
@@ -73,9 +71,7 @@
             "allowedOrigins": [
               "https://akademiabiznesu.vercel.app",
               "https://akademiabiznesup2.vercel.app",
-              "https://raport-akademia.vercel.app",
-              "http://localhost:3000",
-              "http://localhost:3001"
+              "https://raport-akademia.vercel.app"
             ]
           }
         }
@@ -120,9 +116,7 @@
             "dealStageLeadId": "55006628-fed1-4869-aec5-485da469626d",
             "allowedOrigins": [
               "https://strona-dla-architekta-a.velocy.co",
-              "https://strona-dla-architekta-b.velocy.co",
-              "http://localhost:5173",
-              "http://localhost:3000"
+              "https://strona-dla-architekta-b.velocy.co"
             ]
           }
         }

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { createRateLimiter } from '../../lib/rate-limit.js';
 
 export function createRouter(
   handler: {
@@ -9,6 +10,7 @@ export function createRouter(
   allowedOrigins: string[],
 ): Router {
   const router = Router();
+  const rateLimiter = createRateLimiter({ maxRequests: 10, windowMs: 60_000 });
 
   // CORS for /notify (called from LP frontend)
   router.use('/notify', (req: Request, res: Response, next) => {
@@ -23,7 +25,7 @@ export function createRouter(
     next();
   });
 
-  router.post('/webhook', handler.webhookHandler);
-  router.post('/notify', handler.notifyHandler);
+  router.post('/webhook', rateLimiter, handler.webhookHandler);
+  router.post('/notify', rateLimiter, handler.notifyHandler);
   return router;
 }

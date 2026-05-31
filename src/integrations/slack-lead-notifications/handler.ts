@@ -33,6 +33,11 @@ export function createHandler(ctx: OrgContext) {
   }, 10 * 60 * 1000);
   cleanupInterval.unref();
 
+  // Require webhook secret in production
+  if (!webhookSecret && process.env.NODE_ENV === 'production') {
+    throw new Error(`[${ctx.org.id}] slack-lead-notifications: ATTIO_WEBHOOK_SECRET is required in production. Set ${ctx.org.envPrefix}_ATTIO_WEBHOOK_SECRET in .env`);
+  }
+
   let signatureWarningLogged = false;
 
   // --- Core pipeline ---

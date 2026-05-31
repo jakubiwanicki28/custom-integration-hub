@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createHmac } from 'crypto';
+import { randomBytes } from 'crypto';
 import type { OrgCredentials } from './lib/org-context.js';
 
 function requireEnv(name: string): string {
@@ -10,11 +10,22 @@ function requireEnv(name: string): string {
   return value;
 }
 
+const isDev = (process.env.NODE_ENV || 'development') === 'development';
+
+function resolveCookieSecret(): string {
+  if (process.env.DASHBOARD_SECRET) return process.env.DASHBOARD_SECRET;
+  if (isDev) {
+    // In development, generate an ephemeral secret (sessions reset on restart — acceptable for dev)
+    return randomBytes(32).toString('hex');
+  }
+  throw new Error('DASHBOARD_SECRET is required in production. Generate with: openssl rand -hex 32');
+}
+
 // Shared config — not per-org
 export const config = {
   port: Number(process.env.PORT) || 3100,
   nodeEnv: process.env.NODE_ENV || 'development',
-  isDev: (process.env.NODE_ENV || 'development') === 'development',
+  isDev,
 
   openrouter: {
     apiKey: requireEnv('OPENROUTER_API_KEY'),
@@ -22,12 +33,11 @@ export const config = {
     model: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash-lite',
   },
 
+  webhookBaseUrl: process.env.WEBHOOK_BASE_URL || 'https://custom-integration-hub.velocy.co',
+
   dashboard: {
     password: process.env.DASHBOARD_PASSWORD || '',
-    cookieSecret: process.env.DASHBOARD_SECRET
-      || (process.env.DASHBOARD_PASSWORD
-        ? createHmac('sha256', 'dashboard-cookie-key').update(process.env.DASHBOARD_PASSWORD).digest('hex')
-        : ''),
+    cookieSecret: resolveCookieSecret(),
   },
 } as const;
 

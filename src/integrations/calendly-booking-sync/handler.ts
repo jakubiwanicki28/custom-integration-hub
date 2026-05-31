@@ -14,6 +14,11 @@ export function createHandler(ctx: OrgContext) {
   const calendlyToken = process.env[`${ctx.org.envPrefix}_CALENDLY_API_TOKEN`] || '';
   const calendlyUserUri = ctx.integrationConfig.calendlyUserUri as string | undefined;
 
+  // Require webhook secret in production (for /webhook endpoint signature verification)
+  if (!webhookSecret && process.env.NODE_ENV === 'production') {
+    log.warn(`Calendly webhook signature verification disabled — ${ctx.org.envPrefix}_CALENDLY_WEBHOOK_SECRET not set. /webhook endpoint will reject all requests.`);
+  }
+
   const campaignLists = (ctx.integrationConfig.campaignLists ?? {}) as Record<string, CampaignListConfig>;
 
   // Idempotency
@@ -51,6 +56,12 @@ export function createHandler(ctx: OrgContext) {
   async function getCalendlyBookingTimeByEvent(eventUri: string): Promise<string | null> {
     if (!calendlyToken) {
       log.warn('Calendly API token not configured — cannot fetch booking time');
+      return null;
+    }
+
+    // SSRF protection: only allow Calendly API URLs
+    if (!eventUri.startsWith('https://api.calendly.com/')) {
+      log.warn({ eventUri: eventUri.slice(0, 80) }, 'Rejected non-Calendly eventUri (possible SSRF attempt)');
       return null;
     }
 
