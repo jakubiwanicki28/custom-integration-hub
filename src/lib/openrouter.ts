@@ -25,7 +25,7 @@ interface ChatCompletionResponse {
   };
 }
 
-async function chatCompletion(
+export async function chatCompletion(
   model: string,
   messages: Array<Record<string, unknown>>,
 ): Promise<string | null> {
