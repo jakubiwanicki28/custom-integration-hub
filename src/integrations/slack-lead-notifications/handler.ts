@@ -13,7 +13,6 @@ export function createHandler(ctx: OrgContext) {
   const attio = ctx.clients.attio;
   const slack = ctx.clients.slack;
   const log = ctx.log.child({ integration: 'slack-lead-notifications' });
-  const webhookSecret = ctx.org.webhookSecret;
   const workspaceSlug = ctx.org.attioWorkspaceSlug;
 
   // Build list → channel mapping from org config
@@ -33,12 +32,10 @@ export function createHandler(ctx: OrgContext) {
   }, 10 * 60 * 1000);
   cleanupInterval.unref();
 
-  // Require webhook secret in production
-  if (!webhookSecret && process.env.NODE_ENV === 'production') {
-    throw new Error(`[${ctx.org.id}] slack-lead-notifications: ATTIO_WEBHOOK_SECRET is required in production. Set ${ctx.org.envPrefix}_ATTIO_WEBHOOK_SECRET in .env`);
+  // Warn if webhook secret is missing in production (not throw — dashboard can set it at runtime)
+  if (!ctx.org.webhookSecret && process.env.NODE_ENV === 'production') {
+    log.warn(`No ATTIO_WEBHOOK_SECRET configured for ${ctx.org.id}. Webhook signature verification disabled until secret is set via dashboard or .env`);
   }
-
-  let signatureWarningLogged = false;
 
   // --- Core pipeline ---
 
@@ -140,15 +137,13 @@ export function createHandler(ctx: OrgContext) {
   // --- Signature verification ---
 
   function verifySignature(rawBody: Buffer, signature: string): boolean {
-    if (!webhookSecret) {
-      if (!signatureWarningLogged) {
-        log.warn('Webhook signature verification SKIPPED — no ATTIO_WEBHOOK_SECRET configured. Endpoint is open to any sender.');
-        signatureWarningLogged = true;
-      }
+    const secret = ctx.org.webhookSecret;
+    if (!secret) {
+      log.warn('Webhook signature verification SKIPPED — no ATTIO_WEBHOOK_SECRET configured');
       return true;
     }
 
-    const hmac = createHmac('sha256', webhookSecret);
+    const hmac = createHmac('sha256', secret);
     hmac.update(rawBody);
     const expected = hmac.digest('hex');
 
@@ -159,7 +154,7 @@ export function createHandler(ctx: OrgContext) {
   // --- Express handler ---
 
   async function webhookHandler(req: Request, res: Response): Promise<void> {
-    if (webhookSecret) {
+    if (ctx.org.webhookSecret) {
       const signature = (req.headers['attio-signature'] || req.headers['x-attio-signature']) as string | undefined;
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
 

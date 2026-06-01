@@ -14,9 +14,9 @@ export function createHandler(ctx: OrgContext) {
   const calendlyToken = process.env[`${ctx.org.envPrefix}_CALENDLY_API_TOKEN`] || '';
   const calendlyUserUri = ctx.integrationConfig.calendlyUserUri as string | undefined;
 
-  // Require webhook secret in production (for /webhook endpoint signature verification)
-  if (!webhookSecret && process.env.NODE_ENV === 'production') {
-    log.warn(`Calendly webhook signature verification disabled — ${ctx.org.envPrefix}_CALENDLY_WEBHOOK_SECRET not set. /webhook endpoint will reject all requests.`);
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (!webhookSecret && isProduction) {
+    log.warn(`No ${ctx.org.envPrefix}_CALENDLY_WEBHOOK_SECRET configured — /webhook endpoint will reject unsigned requests`);
   }
 
   const campaignLists = (ctx.integrationConfig.campaignLists ?? {}) as Record<string, CampaignListConfig>;
@@ -254,7 +254,12 @@ export function createHandler(ctx: OrgContext) {
   // --- Webhook handler ---
 
   async function webhookHandler(req: Request, res: Response): Promise<void> {
-    // Signature verification
+    // Signature verification — reject in production if no secret configured
+    if (!webhookSecret && isProduction) {
+      res.status(503).json({ error: 'Webhook signature verification not configured' });
+      return;
+    }
+
     if (webhookSecret) {
       const signatureHeader = req.headers['calendly-webhook-signature'] as string | undefined;
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;

@@ -2,31 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { Logger } from 'pino';
 import type { LeadIntakeResponse } from './types.js';
-
-// --- Rate limiter (IP-based) ---
-
-const rateLimits = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 10; // requests per window
-const RATE_WINDOW = 60_000; // 1 minute
-
-const cleanup = setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimits) {
-    if (now > entry.resetAt) rateLimits.delete(ip);
-  }
-}, 5 * 60_000);
-cleanup.unref();
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimits.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateLimits.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
-    return false;
-  }
-  entry.count++;
-  return entry.count > RATE_LIMIT;
-}
+import { createRateLimiter } from '../../lib/rate-limit.js';
 
 export function createRouter(
   handler: {
@@ -56,13 +32,7 @@ export function createRouter(
     next();
   });
 
-  router.post('/', async (req: Request, res: Response) => {
-    const ip = req.ip || 'unknown';
-    if (isRateLimited(ip)) {
-      res.status(429).json({ ok: false, error: 'Too many requests' });
-      return;
-    }
-
+  router.post('/', createRateLimiter({ maxRequests: 10, windowMs: 60_000 }), async (req: Request, res: Response) => {
     const validation = handler.validateRequest(req.body);
     if ('error' in validation) {
       res.status(400).json({ ok: false, error: validation.error });

@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual, randomBytes } from 'crypto';
 import { config } from './config.js';
 import {
   getAllOrganizations, getMountedIntegration, getMountedIntegrationsForOrg,
-  getAllMountedIntegrations, type MountedIntegration,
+  type MountedIntegration,
 } from './lib/registry.js';
 import { getPersonName, getDealName, getDealStage, getPersonEmail, getPersonPhone } from './lib/attio.js';
 import type { AttioWebhook, AttioListEntry } from './lib/attio.js';
@@ -78,7 +78,7 @@ function verifyCsrf(req: Request): boolean {
 function setCsrfCookie(res: Response): string {
   const token = generateCsrfToken();
   res.cookie('csrf_token', token, {
-    httpOnly: false, // JS needs to read it for forms — but we use hidden field instead, so this is just the cookie half
+    httpOnly: true,
     secure: !config.isDev, sameSite: 'strict',
     path: '/dashboard', maxAge: 7 * 24 * 60 * 60 * 1000,
   });
