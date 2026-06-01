@@ -75,6 +75,58 @@ export function createSlackClient(botToken: string, log: Logger): SlackClient {
     return true;
   }
 
+  async function postMessageFull(
+    channelId: string,
+    blocks: SlackBlock[],
+    fallbackText: string,
+    options?: { threadTs?: string },
+  ): Promise<{ ok: boolean; ts?: string }> {
+    const body: Record<string, unknown> = { channel: channelId, blocks, text: fallbackText };
+    if (options?.threadTs) body.thread_ts = options.threadTs;
+
+    const res = await fetchWithTimeout('https://slack.com/api/chat.postMessage', {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      log.error({ status: res.status, channelId }, 'Slack API HTTP error');
+      return { ok: false };
+    }
+
+    const data = await safeJson<SlackPostMessageResponse>(res);
+
+    if (!data.ok) {
+      log.error({ channelId, error: data.error }, 'Slack postMessageFull failed');
+      return { ok: false };
+    }
+
+    log.info({ channelId, ts: data.ts }, 'Slack message sent');
+    return { ok: true, ts: data.ts };
+  }
+
+  async function deleteMessage(channelId: string, ts: string): Promise<boolean> {
+    const body = { channel: channelId, ts };
+
+    const res = await fetchWithTimeout('https://slack.com/api/chat.delete', {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      log.error({ status: res.status, channelId, ts }, 'Slack delete HTTP error');
+      return false;
+    }
+
+    const data = await safeJson<{ ok: boolean; error?: string }>(res);
+
+    if (!data.ok) {
+      log.warn({ channelId, ts, error: data.error }, 'Slack deleteMessage failed');
+      return false;
+    }
+
+    log.info({ channelId, ts }, 'Slack message deleted');
+    return true;
+  }
+
   async function testConnection(): Promise<{ ok: boolean; team?: string; error?: string }> {
     const res = await fetchWithTimeout('https://slack.com/api/auth.test', {
       method: 'POST', headers,
@@ -94,5 +146,5 @@ export function createSlackClient(botToken: string, log: Logger): SlackClient {
     return { ok: true, team: data.team };
   }
 
-  return { postMessage, testConnection };
+  return { postMessage, postMessageFull, deleteMessage, testConnection };
 }

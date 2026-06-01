@@ -26,6 +26,8 @@ export interface AttioClient {
 
 export interface SlackClient {
   postMessage(channelId: string, blocks: import('./slack.js').SlackBlock[], fallbackText: string): Promise<boolean>;
+  postMessageFull(channelId: string, blocks: import('./slack.js').SlackBlock[], fallbackText: string, options?: { threadTs?: string }): Promise<{ ok: boolean; ts?: string }>;
+  deleteMessage(channelId: string, ts: string): Promise<boolean>;
   testConnection(): Promise<{ ok: boolean; team?: string; error?: string }>;
 }
 
@@ -34,6 +36,11 @@ export interface CloudTalkClient {
   getRecentCalls(limit?: number, page?: number): Promise<import('./cloudtalk.js').CallsPage>;
   getCallsSince(since: Date, limit?: number): Promise<import('./cloudtalk.js').CloudTalkCall[]>;
   downloadRecording(callId: string): Promise<Buffer | null>;
+}
+
+export interface GitHubClient {
+  compareCommits(base: string, head: string): Promise<import('./github.js').CompareResult | null>;
+  getRecentCommits(branch: string, count?: number): Promise<import('./github.js').GitHubCommit[]>;
 }
 
 // --- Organization context ---
@@ -50,7 +57,9 @@ export interface OrgContext {
     attio: AttioClient;
     slack?: SlackClient;
     cloudtalk?: CloudTalkClient;
+    github?: GitHubClient;
   };
+  credentials: OrgCredentials;
   integrationConfig: Record<string, unknown>;
   log: Logger;
 }
@@ -73,6 +82,8 @@ export interface OrgCredentials {
   attio: { apiKey: string; webhookSecret: string };
   slack: { botToken: string };
   cloudtalk?: { apiId: string; apiKey: string };
+  github?: { token: string };
+  vercel?: { webhookSecret: string };
 }
 
 // --- Registry types ---

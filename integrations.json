@@ -39,6 +39,16 @@
       "requiredServices": ["attio"],
       "triggers": ["LP form submission"],
       "targets": ["Attio: Person + Deal + List entry", "Brevo: contact"]
+    },
+    {
+      "id": "vercel-deploy-notifications",
+      "name": "Vercel → Slack: Deploy notifications",
+      "description": "Sends deployment status notifications to Slack with changelog",
+      "type": "webhook",
+      "module": "./src/integrations/vercel-deploy-notifications/index.js",
+      "requiredServices": ["slack", "github"],
+      "triggers": ["Vercel: deployment.created/succeeded/error webhook"],
+      "targets": ["Slack: notification with changelog thread"]
     }
   ]
 }

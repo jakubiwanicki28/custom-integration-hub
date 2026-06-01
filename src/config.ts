@@ -46,6 +46,7 @@ export function loadOrgCredentials(envPrefix: string, requiredServices: string[]
   const needsAttio = requiredServices.includes('attio');
   const needsSlack = requiredServices.includes('slack');
   const needsCloudtalk = requiredServices.includes('cloudtalk');
+  const needsGithub = requiredServices.includes('github');
 
   return {
     attio: {
@@ -58,6 +59,12 @@ export function loadOrgCredentials(envPrefix: string, requiredServices: string[]
     cloudtalk: needsCloudtalk ? {
       apiId: requireEnv(`${envPrefix}_CLOUDTALK_API_ID`),
       apiKey: requireEnv(`${envPrefix}_CLOUDTALK_API_KEY`),
+    } : undefined,
+    github: needsGithub ? {
+      token: requireEnv(`${envPrefix}_GITHUB_TOKEN`),
+    } : undefined,
+    vercel: process.env[`${envPrefix}_VERCEL_WEBHOOK_SECRET`] ? {
+      webhookSecret: process.env[`${envPrefix}_VERCEL_WEBHOOK_SECRET`]!,
     } : undefined,
   };
 }

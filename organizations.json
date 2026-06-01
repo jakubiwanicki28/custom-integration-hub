@@ -121,6 +121,35 @@
           }
         }
       ]
+    },
+    {
+      "id": "bookclinic",
+      "name": "BookClinic",
+      "envPrefix": "BOOKCLINIC",
+      "attioWorkspaceSlug": "",
+      "integrations": [
+        {
+          "integrationId": "vercel-deploy-notifications",
+          "status": "development",
+          "config": {
+            "githubOwner": "BookClinic",
+            "githubRepo": "bookclinic-app",
+            "branchChannelMap": {
+              "main": {
+                "channelId": "C0B73QRCUQ3",
+                "channelName": "#prod-env-log",
+                "environment": "Production"
+              },
+              "dev": {
+                "channelId": "C0B7A6G1VA6",
+                "channelName": "#dev-env-log",
+                "environment": "Preview"
+              }
+            },
+            "vercelProjectUrl": "https://vercel.com/bookclinic/bookclinic-app"
+          }
+        }
+      ]
     }
   ]
 }

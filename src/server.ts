@@ -106,6 +106,7 @@ async function bootstrap() {
         if (svc === 'attio') return !credentials.attio.apiKey;
         if (svc === 'slack') return !slackClient;
         if (svc === 'cloudtalk') return !cloudtalkClient;
+        if (svc === 'github') return !credentials.github;
         if (svc === 'openrouter') return false; // shared, always available
         return false;
       });
@@ -128,6 +129,7 @@ async function bootstrap() {
           slack: slackClient,
           cloudtalk: cloudtalkClient,
         },
+        credentials,
         integrationConfig: orgInt.config ?? {},
         log: orgLog,
       };
