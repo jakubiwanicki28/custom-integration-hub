@@ -139,7 +139,8 @@ export function createGitHubClient(token: string, owner: string, repo: string, l
       });
 
       if (res.status === 422) {
-        log.warn({ head, base }, 'PR creation returned 422 (likely already exists)');
+        const errBody = await safeJson<{ message?: string; errors?: Array<{ message?: string }> }>(res);
+        log.warn({ head, base, message: errBody.message, errors: errBody.errors }, 'GitHub PR creation 422');
         return null;
       }
 

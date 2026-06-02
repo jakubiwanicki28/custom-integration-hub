@@ -36,11 +36,6 @@ export function createHandler(ctx: OrgContext) {
   // --- Slack signature verification (HMAC-SHA256) ---
 
   function verifySlackSignature(rawBody: Buffer, timestamp: string, signature: string): boolean {
-    if (!signingSecret) {
-      log.warn('Slack signature verification SKIPPED — no signing secret configured');
-      return true;
-    }
-
     // Anti-replay: reject if timestamp is older than 5 minutes
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(now - Number(timestamp)) > 300) {
@@ -201,7 +196,9 @@ Be concise. Focus on what changed and why it matters, not implementation details
           prConfig.notificationChannelId,
           blocks,
           `PR #${pr.number}: ${pr.title} — ${pr.html_url}`,
-        );
+        ).catch(err => {
+          log.error({ err, channel: prConfig.notificationChannelId }, 'Failed to post PR notification');
+        });
 
         log.info({ prNumber: pr.number, prUrl: pr.html_url, commits: comparison.totalCommits }, 'PR created');
         metrics.track({
@@ -246,17 +243,21 @@ Be concise. Focus on what changed and why it matters, not implementation details
   // --- Express handler ---
 
   async function slashCommandHandler(req: Request, res: Response): Promise<void> {
-    // 1. Verify Slack signature
-    if (signingSecret) {
-      const timestamp = req.headers['x-slack-request-timestamp'] as string | undefined;
-      const signature = req.headers['x-slack-signature'] as string | undefined;
-      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    // 1. Verify Slack signature (mandatory — no bypass)
+    if (!signingSecret) {
+      log.error('Slack signing secret not configured — rejecting request');
+      res.status(500).json({ error: 'Integration misconfigured' });
+      return;
+    }
 
-      if (!timestamp || !signature || !rawBody || !verifySlackSignature(rawBody, timestamp, signature)) {
-        log.warn({ hasTimestamp: !!timestamp, hasSignature: !!signature, hasRawBody: !!rawBody }, 'Invalid Slack signature');
-        res.status(401).json({ error: 'Invalid signature' });
-        return;
-      }
+    const timestamp = req.headers['x-slack-request-timestamp'] as string | undefined;
+    const signature = req.headers['x-slack-signature'] as string | undefined;
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+
+    if (!timestamp || !signature || !rawBody || !verifySlackSignature(rawBody, timestamp, signature)) {
+      log.warn({ hasTimestamp: !!timestamp, hasSignature: !!signature, hasRawBody: !!rawBody }, 'Invalid Slack signature');
+      res.status(401).json({ error: 'Invalid signature' });
+      return;
     }
 
     const payload = req.body as SlackSlashCommandPayload;
@@ -265,7 +266,7 @@ Be concise. Focus on what changed and why it matters, not implementation details
     if (payload.channel_id !== prConfig.allowedChannelId) {
       res.status(200).json({
         response_type: 'ephemeral',
-        text: 'This command can only be used in #prod-env-log',
+        text: `This command can only be used in <#${prConfig.allowedChannelId}>`,
       });
       return;
     }
