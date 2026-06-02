@@ -18,16 +18,38 @@ export function createHandler(ctx: OrgContext) {
   const log = ctx.log.child({ integration: 'github-pr-automation' });
   const signingSecret = ctx.credentials.slack.signingSecret;
 
-  // Config from organizations.json
+  // Validate required config fields at startup
+  const requiredFields = ['githubOwner', 'githubRepo', 'allowedChannelId', 'allowedUserIds', 'notificationChannelId'] as const;
+  for (const field of requiredFields) {
+    if (!ctx.integrationConfig[field]) {
+      throw new Error(`github-pr-automation: missing required config field '${field}'`);
+    }
+  }
+  if (!Array.isArray(ctx.integrationConfig.allowedUserIds) || ctx.integrationConfig.allowedUserIds.length === 0) {
+    throw new Error('github-pr-automation: allowedUserIds must be a non-empty array');
+  }
+
+  // Config from organizations.json (validated above)
   const prConfig: PRConfig = {
     githubOwner: ctx.integrationConfig.githubOwner as string,
     githubRepo: ctx.integrationConfig.githubRepo as string,
     allowedChannelId: ctx.integrationConfig.allowedChannelId as string,
     allowedUserIds: ctx.integrationConfig.allowedUserIds as string[],
-    baseBranch: ctx.integrationConfig.baseBranch as string || 'main',
-    headBranch: ctx.integrationConfig.headBranch as string || 'dev',
+    baseBranch: (ctx.integrationConfig.baseBranch as string) || 'main',
+    headBranch: (ctx.integrationConfig.headBranch as string) || 'dev',
     notificationChannelId: ctx.integrationConfig.notificationChannelId as string,
   };
+
+  // Idempotency: prevent duplicate processing from Slack retries
+  const processedTriggers = new Map<string, number>();
+  const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 min
+  const cleanupInterval = setInterval(() => {
+    const cutoff = Date.now() - TRIGGER_TTL_MS;
+    for (const [id, ts] of processedTriggers) {
+      if (ts < cutoff) processedTriggers.delete(id);
+    }
+  }, 60_000);
+  cleanupInterval.unref();
 
   const github = createGitHubClient(
     ctx.credentials.github.token, prConfig.githubOwner, prConfig.githubRepo, log,
@@ -231,11 +253,16 @@ Be concise. Focus on what changed and why it matters, not implementation details
         }
       }
     } catch (err) {
-      log.error({ err }, 'Error in PR automation pipeline');
-      await respondToSlack(payload.response_url, 'Failed to create PR. Try again later.').catch(() => {});
+      const errorId = Date.now().toString(36);
+      log.error({ err, errorId }, 'Error in PR automation pipeline');
+      await respondToSlack(
+        payload.response_url,
+        `Failed to create PR (ref: ${errorId}). Check server logs.`,
+      ).catch(() => {});
       metrics.track({
         integration: 'github-pr-automation', org: ctx.org.id,
         event: 'error', durationMs: Date.now() - trackStart,
+        meta: { errorId },
       });
     }
   }
@@ -280,13 +307,20 @@ Be concise. Focus on what changed and why it matters, not implementation details
       return;
     }
 
-    // 4. Respond immediately (Slack 3s requirement)
+    // 4. Idempotency: reject duplicate Slack retries
+    if (payload.trigger_id && processedTriggers.has(payload.trigger_id)) {
+      res.status(200).json({ response_type: 'ephemeral', text: 'Already processing this request...' });
+      return;
+    }
+    if (payload.trigger_id) processedTriggers.set(payload.trigger_id, Date.now());
+
+    // 5. Respond immediately (Slack 3s requirement)
     res.status(200).json({
       response_type: 'ephemeral',
       text: `Creating PR \`${prConfig.headBranch}\` → \`${prConfig.baseBranch}\`...`,
     });
 
-    // 5. Process async
+    // 6. Process async
     processSlashCommand(payload).catch(err => {
       log.error({ err }, 'Unhandled error in slash command processing');
     });
