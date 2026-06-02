@@ -15,6 +15,18 @@ const HOURLY_INTERVAL = 60 * 60 * 1000;       // 1h
 const MICRO_CHECK_INTERVAL = 5 * 60 * 1000;   // 5 min
 const ALERT_THROTTLE_MS = 60 * 60 * 1000;     // max 1 alert per hour
 
+// Manual trigger — set by startMonitoring(), callable from dashboard
+let _triggerAnalysis: (() => Promise<void>) | null = null;
+export async function triggerManualAnalysis(): Promise<{ ok: boolean; error?: string }> {
+  if (!_triggerAnalysis) return { ok: false, error: 'Monitoring not started' };
+  try {
+    await _triggerAnalysis();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}
+
 export function startMonitoring(): () => void {
   const slackToken = process.env.VELOCY_SLACK_BOT_TOKEN || '';
   const monitoringConfig = loadMonitoringConfig();
@@ -245,6 +257,9 @@ export function startMonitoring(): () => void {
   microInterval.unref();
 
   let dailyTimer = scheduleDailyDigest();
+
+  // Expose manual trigger for dashboard
+  _triggerAnalysis = runHourlyAnalysis;
 
   // Cleanup old analyses on startup
   cleanupOldAnalyses();

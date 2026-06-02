@@ -12,6 +12,7 @@ import type { ChannelMapping } from './lib/org-context.js';
 import { createLogger } from './lib/logger.js';
 import { metrics } from './lib/metrics.js';
 import { loadAnalyses } from './lib/monitoring/analyst.js';
+import { triggerManualAnalysis } from './lib/monitoring/scheduler.js';
 import type { PersistedAnalysis, VercelProjectHealth } from './lib/monitoring/types.js';
 
 const log = createLogger('dashboard');
@@ -199,10 +200,19 @@ function requireCsrf(req: Request, res: Response): boolean {
 
 // --- Monitoring Page ---
 
+dashboardRouter.post('/monitoring/trigger', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  if (!requireCsrf(req, res)) return;
+  const result = await triggerManualAnalysis();
+  const msg = result.ok ? 'ok:Analiza uruchomiona — sprawdź Slack' : `error:${result.error}`;
+  res.redirect('/dashboard/monitoring?result=' + encodeURIComponent(msg));
+});
+
 dashboardRouter.get('/monitoring', (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
   const csrfToken = setCsrfCookie(res);
   const highlightAnalysis = ((req.query.analysis as string) || '').replace(/[^a-zA-Z0-9T:\-]/g, '') || undefined;
+  const resultParam = req.query.result as string | undefined;
 
   const snapshot1h = metrics.getSnapshot(3_600_000);
   const snapshot24h = metrics.getSnapshot(24 * 60 * 60 * 1000);
@@ -219,7 +229,7 @@ dashboardRouter.get('/monitoring', (req: Request, res: Response) => {
     hourlyData.push(count);
   }
 
-  res.send(renderMonitoringPage(snapshot1h, snapshot24h, analyses, hourlyData, highlightAnalysis, csrfToken));
+  res.send(renderMonitoringPage(snapshot1h, snapshot24h, analyses, hourlyData, highlightAnalysis, resultParam, csrfToken));
 });
 
 // --- Dynamic Test Panel Routes ---
@@ -902,6 +912,7 @@ function renderMonitoringPage(
   analyses: PersistedAnalysis[],
   hourlyData: number[],
   highlightAnalysis?: string,
+  resultParam?: string,
   csrfToken?: string,
 ): string {
   const successRate = snapshot1h.totals.total > 0
@@ -1000,8 +1011,15 @@ function renderMonitoringPage(
     ${statsHtml}
     ${sparklineHtml}
     ${integrationCards ? `<div class="section-card"><div class="section-title">Integracje (ostatnia godzina)</div>${integrationCards}</div>` : ''}
+    ${renderFlash(resultParam)}
     <div class="section-card">
-      <div class="section-title">Analizy AI</div>
+      <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Analizy AI</span>
+        <form method="POST" action="/dashboard/monitoring/trigger" style="display:inline">
+          <input type="hidden" name="_csrf" value="${csrfToken ?? ''}">
+          <button type="submit" class="btn-action">Uruchom analizę</button>
+        </form>
+      </div>
       ${analysesHtml}
     </div>
     <footer>custom-integration-hub.velocy.co</footer>
