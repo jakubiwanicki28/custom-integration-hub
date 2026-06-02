@@ -49,6 +49,16 @@
       "requiredServices": ["slack", "github"],
       "triggers": ["Vercel: deployment.created/succeeded/error webhook"],
       "targets": ["Slack: notification with changelog thread"]
+    },
+    {
+      "id": "github-pr-automation",
+      "name": "Slack → GitHub: PR Automation",
+      "description": "Creates GitHub PRs via Slack slash command with AI-generated descriptions",
+      "type": "webhook",
+      "module": "./src/integrations/github-pr-automation/index.js",
+      "requiredServices": ["slack", "github", "openrouter"],
+      "triggers": ["Slack: /pr slash command"],
+      "targets": ["GitHub: Pull Request", "Slack: response message"]
     }
   ]
 }

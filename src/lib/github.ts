@@ -32,6 +32,16 @@ interface GitHubCompareResponse {
   }>;
 }
 
+export interface GitHubPullRequest {
+  number: number;
+  title: string;
+  body: string;
+  html_url: string;
+  state: string;
+  head: { ref: string };
+  base: { ref: string };
+}
+
 interface GitHubCommitResponse {
   sha: string;
   commit: {
@@ -118,5 +128,50 @@ export function createGitHubClient(token: string, owner: string, repo: string, l
     }
   }
 
-  return { compareCommits, getRecentCommits };
+  async function createPullRequest(
+    title: string, body: string, head: string, base: string,
+  ): Promise<GitHubPullRequest | null> {
+    try {
+      const res = await fetchWithTimeout(`${baseUrl}/pulls`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, head, base }),
+      });
+
+      if (res.status === 422) {
+        log.warn({ head, base }, 'PR creation returned 422 (likely already exists)');
+        return null;
+      }
+
+      if (!res.ok) {
+        log.error({ status: res.status, head, base }, 'GitHub create PR API error');
+        return null;
+      }
+
+      return await safeJson<GitHubPullRequest>(res);
+    } catch (err) {
+      log.error({ err, head, base }, 'GitHub createPullRequest failed');
+      return null;
+    }
+  }
+
+  async function listOpenPullRequests(head: string, base: string): Promise<GitHubPullRequest[]> {
+    const url = `${baseUrl}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&base=${encodeURIComponent(base)}&state=open`;
+
+    try {
+      const res = await fetchWithTimeout(url, { method: 'GET', headers });
+
+      if (!res.ok) {
+        log.error({ status: res.status, head, base }, 'GitHub list PRs API error');
+        return [];
+      }
+
+      return await safeJson<GitHubPullRequest[]>(res);
+    } catch (err) {
+      log.error({ err, head, base }, 'GitHub listOpenPullRequests failed');
+      return [];
+    }
+  }
+
+  return { compareCommits, getRecentCommits, createPullRequest, listOpenPullRequests };
 }

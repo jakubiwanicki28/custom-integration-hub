@@ -41,6 +41,8 @@ export interface CloudTalkClient {
 export interface GitHubClient {
   compareCommits(base: string, head: string): Promise<import('./github.js').CompareResult | null>;
   getRecentCommits(branch: string, count?: number): Promise<import('./github.js').GitHubCommit[]>;
+  createPullRequest(title: string, body: string, head: string, base: string): Promise<import('./github.js').GitHubPullRequest | null>;
+  listOpenPullRequests(head: string, base: string): Promise<import('./github.js').GitHubPullRequest[]>;
 }
 
 // --- Organization context ---
@@ -80,7 +82,7 @@ export interface IntegrationInstance {
 
 export interface OrgCredentials {
   attio: { apiKey: string; webhookSecret: string };
-  slack: { botToken: string };
+  slack: { botToken: string; signingSecret: string };
   cloudtalk?: { apiId: string; apiKey: string };
   github?: { token: string };
   vercel?: { webhookSecret: string };

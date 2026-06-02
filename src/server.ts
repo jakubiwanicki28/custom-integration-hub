@@ -36,7 +36,12 @@ app.use(express.json({
     (_req as express.Request & { rawBody?: Buffer }).rawBody = buf;
   },
 }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({
+  extended: true,
+  verify: (_req, _res, buf) => {
+    (_req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+}));
 
 app.use((req, _res, next) => {
   logger.info({ method: req.method, path: req.path }, 'request');

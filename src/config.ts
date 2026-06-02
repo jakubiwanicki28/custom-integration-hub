@@ -61,6 +61,7 @@ export function loadOrgCredentials(envPrefix: string, requiredServices: string[]
     },
     slack: {
       botToken: needsSlack ? (process.env[`${envPrefix}_SLACK_BOT_TOKEN`] || '') : '',
+      signingSecret: process.env[`${envPrefix}_SLACK_SIGNING_SECRET`] || '',
     },
     cloudtalk: needsCloudtalk ? {
       apiId: requireEnv(`${envPrefix}_CLOUDTALK_API_ID`),

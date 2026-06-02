@@ -148,6 +148,19 @@
             },
             "vercelProjectUrl": "https://vercel.com/bookclinic/bookclinic-app"
           }
+        },
+        {
+          "integrationId": "github-pr-automation",
+          "status": "development",
+          "config": {
+            "githubOwner": "BookClinic",
+            "githubRepo": "bookclinic-app",
+            "allowedChannelId": "C0B73QRCUQ3",
+            "allowedUserIds": ["U0B3TG9HB47"],
+            "baseBranch": "main",
+            "headBranch": "dev",
+            "notificationChannelId": "C0B73QRCUQ3"
+          }
         }
       ]
     }
