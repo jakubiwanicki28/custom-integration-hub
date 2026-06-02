@@ -26,10 +26,11 @@ function parseAIResponse(raw: string): { status: string; summary: string; anomal
 function generateAnalysisId(type: 'hourly' | 'daily' | 'micro'): string {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
-  if (type === 'daily') return `${dateStr}-daily`;
   const hour = String(now.getUTCHours()).padStart(2, '0');
-  if (type === 'micro') return `${dateStr}T${hour}-micro-${Date.now() % 10000}`;
-  return `${dateStr}T${hour}`;
+  const minute = String(now.getUTCMinutes()).padStart(2, '0');
+  if (type === 'daily') return `${dateStr}-daily`;
+  if (type === 'micro') return `${dateStr}T${hour}${minute}-micro`;
+  return `${dateStr}T${hour}${minute}`;
 }
 
 export async function analyzeHourly(

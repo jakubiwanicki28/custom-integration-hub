@@ -125,7 +125,7 @@ export function startMonitoring(): () => void {
 
       // Only escalate if: error rate > 50% with at least 3 events, OR zero events during peak hours
       const criticalErrorRate = errorRate > 0.5 && recent.totals.total >= 3;
-      const zeroActivity = isBusinessHours && isWeekday && recent.totals.total === 0 && recent.http.total < 5;
+      const zeroActivity = isBusinessHours && isWeekday && recent.totals.total === 0 && recent.http.total === 0;
 
       if (!criticalErrorRate && !zeroActivity) return;
 

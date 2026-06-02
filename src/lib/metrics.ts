@@ -267,6 +267,12 @@ class MetricsCollector {
         daily = { date: dateStr, snapshots: [] };
       }
 
+      // Prevent duplicate snapshots (e.g. after PM2 restart within same hour)
+      if (daily.snapshots.some(s => s.hour === hourKey)) {
+        this.lastPersistedHour = hourKey;
+        return;
+      }
+
       daily.snapshots.push(hourlySnapshot);
 
       // Atomic write: write to temp file, then rename

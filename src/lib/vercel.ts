@@ -34,6 +34,14 @@ export function createVercelClient(apiToken: string, teamId: string, log: Logger
     try {
       const res = await fetchWithTimeout(url.toString(), { method: 'GET', headers });
 
+      if (res.status === 401 || res.status === 403) {
+        log.error({ status: res.status, projectId }, 'Vercel auth failed — check VERCEL_API_TOKEN');
+        return [];
+      }
+      if (res.status === 429) {
+        log.warn({ projectId }, 'Vercel rate limited — will retry next poll');
+        return [];
+      }
       if (!res.ok) {
         log.error({ status: res.status, projectId }, 'Vercel deployments API error');
         return [];

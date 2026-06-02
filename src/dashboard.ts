@@ -206,7 +206,7 @@ dashboardRouter.get('/monitoring', (req: Request, res: Response) => {
 
   const snapshot1h = metrics.getSnapshot(3_600_000);
   const snapshot24h = metrics.getSnapshot(24 * 60 * 60 * 1000);
-  const analyses = loadAnalyses();
+  const analyses = loadAnalyses().slice(-50);
 
   // Get hourly sparkline data (last 12 hours)
   const hourlyData: number[] = [];

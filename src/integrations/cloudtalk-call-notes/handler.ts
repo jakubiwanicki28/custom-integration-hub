@@ -48,13 +48,13 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
     const trackStart = Date.now();
 
     if (call.duration < MIN_CALL_DURATION) {
-      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', meta: { reason: 'short_call' } });
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', durationMs: Date.now() - trackStart, meta: { reason: 'short_call' } });
       return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };
     }
 
     const phoneNumber = call.externalNumber;
     if (!phoneNumber) {
-      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', meta: { reason: 'no_phone' } });
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', durationMs: Date.now() - trackStart, meta: { reason: 'no_phone' } });
       return { success: false, error: 'Brak numeru telefonu' };
     }
 

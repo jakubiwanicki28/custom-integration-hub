@@ -144,7 +144,7 @@ export function createHandler(ctx: OrgContext) {
     const trackStart = Date.now();
     const campaignConfig = campaigns[data.campaign];
     if (!campaignConfig) {
-      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', meta: { reason: 'unknown_campaign', campaign: data.campaign } });
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { reason: 'unknown_campaign', campaign: data.campaign } });
       return { ok: false, error: `Unknown campaign: ${data.campaign}` };
     }
 
