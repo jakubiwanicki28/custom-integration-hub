@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import { config, loadOrgCredentials } from './config.js';
 import { logger } from './lib/logger.js';
 import { metrics } from './lib/metrics.js';
+import { startMonitoring } from './lib/monitoring/scheduler.js';
 import {
   loadIntegrationCatalog, loadOrganizations, getAllOrganizations,
   getCatalogEntry, importIntegrationModule, registerMountedIntegration,
@@ -191,11 +192,15 @@ async function bootstrap() {
   // Start metrics persistence (hourly snapshots to disk)
   metrics.startPersistence();
 
+  // Start monitoring (AI analysis, Slack alerts, daily digest)
+  const stopMonitoring = startMonitoring();
+
   let shuttingDown = false;
   function shutdown(signal: string) {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received, closing gracefully');
+    stopMonitoring();
     server.close(() => {
       logger.info('Server closed');
       process.exit(0);
