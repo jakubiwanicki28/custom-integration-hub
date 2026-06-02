@@ -7,6 +7,7 @@ import { createGitHubClient } from '../../lib/github.js';
 import type { GitHubCommit } from '../../lib/github.js';
 import type { SlackBlock } from '../../lib/slack.js';
 import { metrics } from '../../lib/metrics.js';
+import { chatCompletion } from '../../lib/openrouter.js';
 import type { VercelWebhookPayload, DeployState, BranchChannelConfig, ProcessDeployResult } from './types.js';
 
 export function createHandler(ctx: OrgContext) {
@@ -81,7 +82,7 @@ export function createHandler(ctx: OrgContext) {
     return {
       sha: meta.githubCommitSha || meta.gitlabCommitSha || '',
       branch: meta.githubCommitRef || meta.gitlabCommitRef || '',
-      message: meta.githubCommitMessage || meta.gitlabCommitMessage || '',
+      message: (meta.githubCommitMessage || meta.gitlabCommitMessage || '').split('\n')[0],
       author: meta.githubCommitAuthorLogin || meta.gitlabCommitAuthorLogin || '',
       deploymentUrl: `https://${payload.deployment.url}`,
       deploymentId: payload.deployment.id,
@@ -122,7 +123,33 @@ export function createHandler(ctx: OrgContext) {
     return groups;
   }
 
-  function formatChangelogBlocks(commits: GitHubCommit[], stats: { additions: number; deletions: number }): SlackBlock[] {
+  async function generateBusinessSummary(commits: GitHubCommit[]): Promise<string | null> {
+    const commitList = commits
+      .filter(c => !c.message.startsWith('Merge '))
+      .map(c => `- ${c.message}`)
+      .join('\n');
+
+    if (!commitList) return null;
+
+    try {
+      const result = await chatCompletion('google/gemini-2.5-flash-lite', [
+        {
+          role: 'system',
+          content: `You are analyzing a deployment changelog for BookClinic — a SaaS clinic management app for beauty and medical-aesthetic clinics. Summarize what changed from a user/business perspective in Polish. Be concise (3-5 bullet points max, each 1 sentence). Focus on what end-users or the business would care about, not implementation details. If commits are purely technical (refactoring, CI, deps), say so briefly in one sentence. Output ONLY the bullet points, no headers or preamble.`,
+        },
+        {
+          role: 'user',
+          content: `Commits in this deployment:\n${commitList}`,
+        },
+      ]);
+      return result;
+    } catch (err) {
+      log.warn({ err }, 'Failed to generate AI business summary, skipping');
+      return null;
+    }
+  }
+
+  function formatChangelogBlocks(commits: GitHubCommit[], stats: { additions: number; deletions: number }, aiSummary?: string | null): SlackBlock[] {
     const groups = groupCommitsByType(commits);
     const blocks: SlackBlock[] = [
       {
@@ -130,6 +157,14 @@ export function createHandler(ctx: OrgContext) {
         text: { type: 'plain_text', text: `📋 Changelog (${commits.length} commits)`, emoji: true },
       },
     ];
+
+    if (aiSummary) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `💡 *Co się zmieniło:*\n${aiSummary}` },
+      });
+      blocks.push({ type: 'divider' });
+    }
 
     for (const [label, groupCommits] of groups) {
       const lines = groupCommits.map(c => `• ${c.message} — @${c.author}`).join('\n');
@@ -280,14 +315,16 @@ export function createHandler(ctx: OrgContext) {
       const comparison = await github.compareCommits(previousSha, git.sha);
       if (comparison && comparison.totalCommits > 0) {
         commitCount = comparison.totalCommits;
-        changelogBlocks = formatChangelogBlocks(comparison.commits, comparison.stats);
+        const aiSummary = await generateBusinessSummary(comparison.commits);
+        changelogBlocks = formatChangelogBlocks(comparison.commits, comparison.stats, aiSummary);
       }
     } else if (git.sha) {
       // First deploy — get recent commits for context
       const recentCommits = await github.getRecentCommits(git.branch, 5);
       if (recentCommits.length > 0) {
         commitCount = recentCommits.length;
-        changelogBlocks = formatChangelogBlocks(recentCommits, { additions: 0, deletions: 0 });
+        const aiSummary = await generateBusinessSummary(recentCommits);
+        changelogBlocks = formatChangelogBlocks(recentCommits, { additions: 0, deletions: 0 }, aiSummary);
       }
     }
 
