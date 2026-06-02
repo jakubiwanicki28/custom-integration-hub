@@ -11,6 +11,8 @@ import type { CloudTalkCall } from './lib/cloudtalk.js';
 import type { ChannelMapping } from './lib/org-context.js';
 import { createLogger } from './lib/logger.js';
 import { metrics } from './lib/metrics.js';
+import { loadAnalyses } from './lib/monitoring/analyst.js';
+import type { PersistedAnalysis, VercelProjectHealth } from './lib/monitoring/types.js';
 
 const log = createLogger('dashboard');
 
@@ -194,6 +196,31 @@ function requireCsrf(req: Request, res: Response): boolean {
   }
   return true;
 }
+
+// --- Monitoring Page ---
+
+dashboardRouter.get('/monitoring', (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const csrfToken = setCsrfCookie(res);
+  const highlightAnalysis = req.query.analysis as string | undefined;
+
+  const snapshot1h = metrics.getSnapshot(3_600_000);
+  const snapshot24h = metrics.getSnapshot(24 * 60 * 60 * 1000);
+  const analyses = loadAnalyses();
+
+  // Get hourly sparkline data (last 12 hours)
+  const hourlyData: number[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const windowStart = Date.now() - (i + 1) * 3_600_000;
+    const windowEnd = Date.now() - i * 3_600_000;
+    const count = metrics.getEvents(12 * 3_600_000).filter(e =>
+      e.integration !== '_http' && e.timestamp >= windowStart && e.timestamp < windowEnd
+    ).length;
+    hourlyData.push(count);
+  }
+
+  res.send(renderMonitoringPage(snapshot1h, snapshot24h, analyses, hourlyData, highlightAnalysis, csrfToken));
+});
 
 // --- Dynamic Test Panel Routes ---
 
@@ -557,6 +584,22 @@ const STYLES = `
   .page-link { color: #58a6ff; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; }
   .page-link:hover { border-color: #58a6ff; }
   .page-info { font-size: 13px; color: #8b949e; }
+  .tab-nav { display: flex; gap: 4px; }
+  .tab { padding: 6px 14px; border-radius: 6px; font-size: 13px; color: #8b949e; text-decoration: none; font-weight: 500; }
+  .tab:hover { color: #c9d1d9; background: #21262d; }
+  .tab-active { color: #f0f6fc; background: #1f6feb33; border: 1px solid #1f6feb66; }
+  .sparkline { font-family: monospace; letter-spacing: 1px; color: #3fb950; font-size: 14px; }
+  .analysis-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+  .analysis-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  .badge-normal { background: #3fb95020; color: #3fb950; }
+  .badge-anomaly { background: #d2992233; color: #d29922; }
+  .badge-critical { background: #da363433; color: #f85149; }
+  .badge-hourly { background: #58a6ff20; color: #58a6ff; }
+  .badge-daily { background: #8957e533; color: #bc8cff; }
+  .badge-micro { background: #d2992233; color: #d29922; }
+  .detail-toggle { cursor: pointer; color: #58a6ff; font-size: 12px; text-decoration: none; }
+  .detail-content { display: none; margin-top: 12px; padding: 12px; background: #0d1117; border-radius: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; }
+  .vercel-table td code { font-size: 11px; }
   footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
   @media (max-width: 700px) { body { padding: 16px; } table { font-size: 12px; } th, td { padding: 8px 6px; } .stat { min-width: 100%; } .stats { flex-direction: column; } }
 `;
@@ -653,9 +696,10 @@ function renderDashboardPage(data: {
     <header>
       <div class="header-left">
         <h1>Integration Hub</h1>
-        <select class="org-switcher" onchange="location.href='/dashboard?org='+this.value">
+        <nav class="tab-nav"><a href="/dashboard" class="tab tab-active">Integracje</a><a href="/dashboard/monitoring" class="tab">Monitoring</a></nav>
+        <form method="GET" action="/dashboard" style="display:inline"><select name="org" class="org-switcher" onchange="this.form.submit()">
           ${orgOptions}
-        </select>
+        </select><noscript><button type="submit" class="btn-process">Go</button></noscript></form>
       </div>
       <form method="POST" action="/dashboard/logout" style="display:inline">
         <input type="hidden" name="_csrf" value="${data.csrfToken}">
@@ -834,4 +878,135 @@ function renderCalendlySyncPanel(
   </div>`;
 
   return pageShell('Calendly Booking Sync', body);
+}
+
+// --- Monitoring Page ---
+
+function buildSparkline(data: number[]): string {
+  const bars = '▁▂▃▄▅▆▇█';
+  const max = Math.max(...data, 1);
+  return data.map(v => bars[Math.min(Math.round((v / max) * (bars.length - 1)), bars.length - 1)]).join('');
+}
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return 'teraz';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}min temu`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h temu`;
+  return `${Math.floor(diff / 86_400_000)}d temu`;
+}
+
+function renderMonitoringPage(
+  snapshot1h: import('./lib/metrics.js').MetricsSnapshot,
+  snapshot24h: import('./lib/metrics.js').MetricsSnapshot,
+  analyses: PersistedAnalysis[],
+  hourlyData: number[],
+  highlightAnalysis?: string,
+  csrfToken?: string,
+): string {
+  const successRate = snapshot1h.totals.total > 0
+    ? Math.round((snapshot1h.totals.success / snapshot1h.totals.total) * 100)
+    : 100;
+
+  const activeIntegrations = Object.keys(snapshot1h.byIntegration).length;
+
+  // Stats row
+  const statsHtml = `
+    <div class="stats">
+      <div class="stat"><div class="stat-value">${snapshot1h.http.total}</div><div class="stat-label">Requests 1h</div></div>
+      <div class="stat"><div class="stat-value" style="color:${successRate >= 90 ? '#3fb950' : successRate >= 70 ? '#d29922' : '#f85149'}">${successRate}%</div><div class="stat-label">Success Rate</div></div>
+      <div class="stat"><div class="stat-value">${snapshot1h.http.avgDurationMs}ms</div><div class="stat-label">Avg Latency</div></div>
+      <div class="stat"><div class="stat-value">${activeIntegrations}</div><div class="stat-label">Active 1h</div></div>
+      <div class="stat"><div class="stat-value">${snapshot24h.totals.total}</div><div class="stat-label">Events 24h</div></div>
+    </div>`;
+
+  // Sparkline
+  const sparklineHtml = hourlyData.some(v => v > 0) ? `
+    <div class="section-card">
+      <div class="section-title">Aktywność (ostatnie 12h)</div>
+      <div class="sparkline" title="${hourlyData.join(', ')}">${buildSparkline(hourlyData)}</div>
+      <div style="font-size:11px;color:#484f58;margin-top:4px">Lewo = 12h temu, prawo = teraz. Skala: max ${Math.max(...hourlyData)} eventów/h</div>
+    </div>` : '';
+
+  // Per-integration breakdown
+  const integrationCards = Object.entries(snapshot1h.byIntegration).map(([name, stats]) => {
+    const orgParts = Object.entries(stats.byOrg).map(([o, c]) =>
+      `<span class="badge badge-webhook" style="font-size:10px">${escapeHtml(o)}: ${c}</span>`
+    ).join(' ');
+    const errColor = stats.error > 0 ? '#f85149' : '#3fb950';
+    return `<div class="integration-card" style="padding:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span style="font-weight:600;color:#f0f6fc">${escapeHtml(name)}</span>
+        <span style="font-size:12px;color:#8b949e">${stats.avgDurationMs}ms avg</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:13px">
+        <span style="color:#3fb950">${stats.success} ok</span>
+        <span style="color:${errColor}">${stats.error} err</span>
+        <span style="color:#8b949e">${stats.skip} skip</span>
+        <span style="color:#484f58">${stats.dedup} dedup</span>
+      </div>
+      <div style="margin-top:6px">${orgParts}</div>
+    </div>`;
+  }).join('');
+
+  // AI Analyses timeline
+  const sortedAnalyses = [...analyses].reverse(); // newest first
+  const analysesHtml = sortedAnalyses.length === 0
+    ? '<div style="text-align:center;color:#484f58;padding:30px">Brak analiz AI — pierwsza pojawi się po godzinie od startu</div>'
+    : sortedAnalyses.map((a, i) => {
+      const time = new Date(a.timestamp);
+      const timeStr = time.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Warsaw' });
+      const isHighlighted = highlightAnalysis === a.id;
+      const highlightStyle = isHighlighted ? 'border-color:#1f6feb;box-shadow:0 0 8px #1f6feb44;' : '';
+
+      let anomalyHtml = '';
+      if (a.anomalies.length > 0) {
+        anomalyHtml = a.anomalies.map(an =>
+          `<div style="font-size:12px;margin-top:4px;color:#c9d1d9">
+            <span style="color:${an.severity === 'high' ? '#f85149' : an.severity === 'medium' ? '#d29922' : '#58a6ff'}">●</span>
+            <strong>${escapeHtml(an.metric)}</strong>: ${escapeHtml(an.actual)} (oczekiwano: ${escapeHtml(an.expected)})
+          </div>`
+        ).join('');
+      }
+
+      const detailId = `detail-${i}`;
+      return `<div class="analysis-card" id="analysis-${escapeHtml(a.id)}" style="${highlightStyle}">
+        <div class="analysis-header">
+          <span class="status-dot status-${a.status === 'normal' ? 'active' : a.status === 'anomaly' ? 'development' : 'inactive'}" style="${a.status === 'critical' ? 'background:#f85149;box-shadow:0 0 6px #f8514966' : ''}"></span>
+          <span style="font-weight:600;color:#f0f6fc">${timeStr}</span>
+          <span class="badge badge-${a.type}">${a.type}</span>
+          <span class="badge badge-${a.status}">${a.status}</span>
+        </div>
+        ${a.summary ? `<div style="font-size:14px;color:#c9d1d9;margin-bottom:4px">${escapeHtml(a.summary)}</div>` : ''}
+        ${anomalyHtml}
+        ${a.recommendations && a.recommendations.length > 0 ? `<div style="margin-top:6px;font-size:12px;color:#8b949e">${a.recommendations.map(r => `💡 ${escapeHtml(r)}`).join('<br>')}</div>` : ''}
+        <a class="detail-toggle" onclick="var el=document.getElementById('${detailId}');el.style.display=el.style.display==='block'?'none':'block'">Pokaż prompt/odpowiedź AI ▾</a>
+        <div class="detail-content" id="${detailId}"><strong>PROMPT:</strong>\n${escapeHtml(a.prompt || '(brak)')}\n\n<strong>ODPOWIEDŹ AI:</strong>\n${escapeHtml(a.rawResponse || '(brak)')}</div>
+      </div>`;
+    }).join('');
+
+  const body = `
+  <div class="container">
+    <header>
+      <div class="header-left">
+        <h1>Integration Hub</h1>
+        <nav class="tab-nav"><a href="/dashboard" class="tab">Integracje</a><a href="/dashboard/monitoring" class="tab tab-active">Monitoring</a></nav>
+      </div>
+      <form method="POST" action="/dashboard/logout" style="display:inline">
+        <input type="hidden" name="_csrf" value="${csrfToken ?? ''}">
+        <button type="submit" class="logout-btn">Wyloguj</button>
+      </form>
+    </header>
+    ${statsHtml}
+    ${sparklineHtml}
+    ${integrationCards ? `<div class="section-card"><div class="section-title">Integracje (ostatnia godzina)</div>${integrationCards}</div>` : ''}
+    <div class="section-card">
+      <div class="section-title">Analizy AI</div>
+      ${analysesHtml}
+    </div>
+    <footer>custom-integration-hub.velocy.co</footer>
+  </div>
+  ${highlightAnalysis ? `<script>document.getElementById('analysis-${escapeHtml(highlightAnalysis)}')?.scrollIntoView({behavior:'smooth',block:'center'})</script>` : ''}`;
+
+  return pageShell('Monitoring', body);
 }
