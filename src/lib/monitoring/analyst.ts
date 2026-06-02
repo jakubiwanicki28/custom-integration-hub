@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync, mkdir
 import { join } from 'path';
 import { chatCompletion } from '../openrouter.js';
 import { logger } from '../logger.js';
+import { config } from '../../config.js';
 import { buildHourlyAnalysisPrompt, buildDailyDigestPrompt, promptToText } from './prompts.js';
 import type { MetricsSnapshot, HourlySnapshot } from '../metrics.js';
 import type { AnalysisResult, PersistedAnalysis, VercelProjectHealth } from './types.js';
@@ -10,7 +11,7 @@ const log = logger.child({ lib: 'monitoring-analyst' });
 
 const ANALYSES_DIR = join(process.cwd(), 'data', 'analyses');
 const RETENTION_DAYS = 30;
-const MODEL = 'google/gemini-2.5-flash-lite';
+const MODEL = process.env.MONITORING_AI_MODEL || config.openrouter.model;
 
 function parseAIResponse(raw: string): { status: string; summary: string; anomalies: AnalysisResult['anomalies']; recommendations?: string[] } | null {
   try {
@@ -44,8 +45,20 @@ export async function analyzeHourly(
 
     const raw = await chatCompletion(MODEL, messages);
     if (!raw) {
-      log.warn('AI returned null for hourly analysis');
-      return null;
+      log.warn('AI API unavailable for hourly analysis — persisting fallback');
+      const fallback: PersistedAnalysis = {
+        id: generateAnalysisId('hourly'),
+        timestamp: new Date().toISOString(),
+        type: 'hourly',
+        status: 'normal',
+        summary: 'Analiza AI niedostępna (błąd API). Metryki zebrane.',
+        anomalies: [],
+        snapshot: current,
+        prompt: promptText,
+        rawResponse: '[AI unavailable]',
+      };
+      persistAnalysis(fallback);
+      return fallback;
     }
 
     const parsed = parseAIResponse(raw);
@@ -82,8 +95,20 @@ export async function analyzeDaily(
 
     const raw = await chatCompletion(MODEL, messages);
     if (!raw) {
-      log.warn('AI returned null for daily analysis');
-      return null;
+      log.warn('AI API unavailable for daily analysis — persisting fallback');
+      const fallback: PersistedAnalysis = {
+        id: generateAnalysisId('daily'),
+        timestamp: new Date().toISOString(),
+        type: 'daily',
+        status: 'normal',
+        summary: 'Dzienny raport AI niedostępny (błąd API). Metryki zebrane.',
+        anomalies: [],
+        snapshot: { windowMs: 0, from: 0, to: 0, totals: { total: 0, success: 0, error: 0, skip: 0, dedup: 0 }, byIntegration: {}, http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {} } },
+        prompt: promptText,
+        rawResponse: '[AI unavailable]',
+      };
+      persistAnalysis(fallback);
+      return fallback;
     }
 
     const parsed = parseAIResponse(raw);

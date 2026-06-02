@@ -28,14 +28,26 @@ export function loadMonitoringConfig(): MonitoringConfig {
 
     const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
 
+    let pollIntervalMs = raw.vercel?.pollIntervalMs ?? DEFAULT_CONFIG.vercel.pollIntervalMs;
+    if (typeof pollIntervalMs !== 'number' || pollIntervalMs < 10_000) {
+      log.warn({ pollIntervalMs }, 'Invalid pollIntervalMs, using default 600s');
+      pollIntervalMs = DEFAULT_CONFIG.vercel.pollIntervalMs;
+    }
+
+    let dailyDigestHour = raw.slack?.dailyDigestHour ?? DEFAULT_CONFIG.slack.dailyDigestHour;
+    if (!Number.isInteger(dailyDigestHour) || dailyDigestHour < 0 || dailyDigestHour > 23) {
+      log.warn({ dailyDigestHour }, 'Invalid dailyDigestHour (must be 0-23), using default');
+      dailyDigestHour = DEFAULT_CONFIG.slack.dailyDigestHour;
+    }
+
     return {
       vercel: {
-        pollIntervalMs: raw.vercel?.pollIntervalMs ?? DEFAULT_CONFIG.vercel.pollIntervalMs,
+        pollIntervalMs,
         projects: raw.vercel?.projects ?? {},
       },
       slack: {
         channelId: raw.slack?.channelId ?? '',
-        dailyDigestHour: raw.slack?.dailyDigestHour ?? DEFAULT_CONFIG.slack.dailyDigestHour,
+        dailyDigestHour,
         timezone: raw.slack?.timezone ?? DEFAULT_CONFIG.slack.timezone,
       },
     };

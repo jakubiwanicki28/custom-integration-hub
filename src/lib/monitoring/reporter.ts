@@ -5,6 +5,10 @@ import type { MetricsSnapshot } from '../metrics.js';
 
 const dashboardUrl = () => `${config.webhookBaseUrl}/dashboard/monitoring`;
 
+function escapeSlack(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function statusEmoji(status: string): string {
   if (status === 'critical') return '🔴';
   if (status === 'anomaly') return '⚠️';
@@ -44,7 +48,7 @@ export function formatAnomalyAlert(analysis: PersistedAnalysis): { blocks: Slack
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `${severityEmoji(a.severity)} *${a.metric}*\nAktualnie: ${a.actual} — Oczekiwano: ${a.expected}`,
+          text: `${severityEmoji(a.severity)} *${escapeSlack(a.metric)}*\nAktualnie: ${escapeSlack(a.actual)} — Oczekiwano: ${escapeSlack(a.expected)}`,
         },
       });
     }
@@ -85,7 +89,7 @@ export function formatDailyDigest(analysis: PersistedAnalysis, snapshot: Metrics
   const statsLines: string[] = [];
   for (const [name, stats] of Object.entries(snapshot.byIntegration)) {
     const errPart = stats.error > 0 ? `, ${stats.error} err` : '';
-    statsLines.push(`*${name}*: ${stats.total} events (${stats.success} ok${errPart})`);
+    statsLines.push(`*${escapeSlack(name)}*: ${stats.total} events (${stats.success} ok${errPart})`);
   }
 
   if (statsLines.length > 0) {

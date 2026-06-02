@@ -84,9 +84,17 @@ export function createVercelMonitor(
 
         results.push(health);
 
-        // Track state transitions
+        // Track state transitions (log initial ERROR states on first check)
         const prevState = previousStates.get(project.id);
-        if (prevState && prevState !== state) {
+        if (!prevState) {
+          previousStates.set(project.id, state);
+          if (state === 'ERROR') {
+            metrics.track({
+              integration: '_vercel', org: project.org, event: 'error',
+              meta: { project: project.name, newState: state, transition: 'initial_error' },
+            });
+          }
+        } else if (prevState !== state) {
           const isRecovery = prevState === 'ERROR' && state === 'READY';
           const isFailure = state === 'ERROR';
 
