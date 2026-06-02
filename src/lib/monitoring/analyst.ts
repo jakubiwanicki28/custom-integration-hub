@@ -147,6 +147,12 @@ function persistAnalysis(analysis: PersistedAnalysis): void {
       }
     } catch { /* start fresh */ }
 
+    // Prevent duplicate analyses (e.g. after process restart within same hour)
+    if (analyses.some(a => a.id === analysis.id)) {
+      log.info({ id: analysis.id }, 'Analysis already persisted, skipping duplicate');
+      return;
+    }
+
     analyses.push(analysis);
 
     const tmpPath = filePath + '.tmp';

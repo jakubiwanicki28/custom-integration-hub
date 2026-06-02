@@ -110,19 +110,24 @@ class MetricsCollector {
       else if (e.event === 'dedup') stats.dedup++;
 
       stats.byOrg[e.org] = (stats.byOrg[e.org] ?? 0) + 1;
-      if (e.durationMs && e.durationMs > stats.maxDurationMs) stats.maxDurationMs = e.durationMs;
+      if (e.durationMs) {
+        if (e.durationMs > stats.maxDurationMs) stats.maxDurationMs = e.durationMs;
+        // Track for average computation (stored temporarily, cleaned up below)
+        (stats as IntegrationStats & { _totalDuration?: number; _durationCount?: number })._totalDuration =
+          ((stats as IntegrationStats & { _totalDuration?: number })._totalDuration ?? 0) + e.durationMs;
+        (stats as IntegrationStats & { _totalDuration?: number; _durationCount?: number })._durationCount =
+          ((stats as IntegrationStats & { _durationCount?: number })._durationCount ?? 0) + 1;
+      }
     }
 
-    // Compute averages
+    // Compute averages from accumulated totals
     for (const stats of Object.values(byIntegration)) {
-      const withDuration = filtered.filter(e => e.integration !== '_http' && e.durationMs);
-      const integrationEvents = withDuration.filter(e => {
-        const key = Object.entries(byIntegration).find(([, v]) => v === stats)?.[0];
-        return key && e.integration === key;
-      });
-      if (integrationEvents.length > 0) {
-        stats.avgDurationMs = Math.round(integrationEvents.reduce((sum, e) => sum + (e.durationMs ?? 0), 0) / integrationEvents.length);
+      const s = stats as IntegrationStats & { _totalDuration?: number; _durationCount?: number };
+      if (s._durationCount && s._durationCount > 0) {
+        stats.avgDurationMs = Math.round(s._totalDuration! / s._durationCount);
       }
+      delete s._totalDuration;
+      delete s._durationCount;
     }
 
     return {

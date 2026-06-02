@@ -207,9 +207,11 @@ export function startMonitoring(): () => void {
     if (currentHour < targetHour) {
       msUntilTarget = ((targetHour - currentHour) * 60 - currentMinute) * 60 * 1000;
     } else {
-      // Schedule for tomorrow
+      // Schedule for tomorrow (also handles currentHour === targetHour)
       msUntilTarget = ((24 - currentHour + targetHour) * 60 - currentMinute) * 60 * 1000;
     }
+    // Safety: if computed time is in the past or too close, push to tomorrow
+    if (msUntilTarget < 60_000) msUntilTarget += 24 * 60 * 60 * 1000;
 
     log.info({ targetHour, tz, msUntilTarget: Math.round(msUntilTarget / 60_000) }, 'Daily digest scheduled (minutes from now)');
 

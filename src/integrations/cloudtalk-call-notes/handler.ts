@@ -170,6 +170,7 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
         log.warn({ callId, error: result.error }, 'Webhook processing failed, will retry via poller');
       }
     } catch (err) {
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'error', meta: { reason: 'webhook_error' } });
       log.error({ err, callId }, 'Unhandled error in webhook processing — will retry via poller');
     }
   }

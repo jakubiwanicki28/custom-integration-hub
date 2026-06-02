@@ -201,6 +201,7 @@ export function createHandler(ctx: OrgContext) {
       processListEntry(listId, dealRecordId, idempotencyKey).catch(err => {
         const key = idempotencyKey || `${listId}:${dealRecordId}`;
         processedEntries.delete(key);
+        metrics.track({ integration: 'slack-lead-notifications', org: ctx.org.id, event: 'error', meta: { reason: 'unhandled_error' } });
         log.error({ err, listId, dealRecordId }, 'Unhandled error in lead processing — will retry on next webhook');
       });
     }

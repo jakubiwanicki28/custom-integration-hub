@@ -309,6 +309,7 @@ export function createHandler(ctx: OrgContext) {
 
     syncBooking(email, startTime).catch(err => {
       processedEvents.delete(key);
+      metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'error', meta: { reason: 'unhandled_error' } });
       log.error({ err, email }, 'Unhandled error in booking sync');
     });
   }
@@ -354,6 +355,7 @@ export function createHandler(ctx: OrgContext) {
       }
     }).catch(err => {
       processedEvents.delete(key);
+      metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'error', meta: { reason: 'unhandled_notify_error' } });
       log.error({ err, email }, 'Unhandled error in booking notify sync');
     });
   }

@@ -202,7 +202,7 @@ function requireCsrf(req: Request, res: Response): boolean {
 dashboardRouter.get('/monitoring', (req: Request, res: Response) => {
   if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
   const csrfToken = setCsrfCookie(res);
-  const highlightAnalysis = req.query.analysis as string | undefined;
+  const highlightAnalysis = ((req.query.analysis as string) || '').replace(/[^a-zA-Z0-9T:\-]/g, '') || undefined;
 
   const snapshot1h = metrics.getSnapshot(3_600_000);
   const snapshot24h = metrics.getSnapshot(24 * 60 * 60 * 1000);
