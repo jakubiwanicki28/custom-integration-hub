@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import type { OrgContext } from '../../lib/org-context.js';
 import { fetchWithTimeout, safeJson } from '../../lib/fetch.js';
 import { getDealName, getAssociatedDealIds } from '../../lib/attio.js';
+import { metrics } from '../../lib/metrics.js';
 import type { CalendlyWebhookPayload, CampaignListConfig, BookingSyncResult } from './types.js';
 
 const IDEMPOTENCY_TTL = 60 * 60 * 1000; // 1 hour
@@ -193,10 +194,13 @@ export function createHandler(ctx: OrgContext) {
   // --- Core pipeline ---
 
   async function syncBooking(email: string, startTime: string | null): Promise<BookingSyncResult> {
+    const trackStart = Date.now();
+
     // 1. Find Person in Attio by email
     const person = await attio.findPersonByEmail(email);
     if (!person) {
       log.info({ email }, 'Person not found in Attio — not our lead, ignoring');
+      metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'skip', durationMs: Date.now() - trackStart, meta: { reason: 'person_not_found' } });
       return { success: true, email }; // Not an error — just not our lead
     }
 
@@ -212,6 +216,7 @@ export function createHandler(ctx: OrgContext) {
     // 3. Update deals and campaign list entries — only if we have a confirmed booking time
     if (!startTime) {
       log.warn({ email }, 'No booking time available — skipping status update to avoid false positives');
+      metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { reason: 'no_start_time' } });
       return { success: false, email, error: 'Calendly booking time not found' };
     }
 
@@ -248,6 +253,7 @@ export function createHandler(ctx: OrgContext) {
       return { success: true, email }; // Not an error — person exists but not in our campaigns
     }
 
+    metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { synced: String(synced) } });
     return { success: true, email };
   }
 
@@ -296,6 +302,7 @@ export function createHandler(ctx: OrgContext) {
     const key = `${email}:${startTime}`;
     if (processedEvents.has(key)) {
       log.info({ key }, 'Booking already processed, skipping');
+      metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'dedup' });
       return;
     }
     processedEvents.set(key, Date.now());
@@ -333,6 +340,7 @@ export function createHandler(ctx: OrgContext) {
     const key = `notify:${email}`;
     if (processedEvents.has(key)) {
       log.info({ key }, 'Booking notification already processed, skipping');
+      metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'dedup' });
       return;
     }
     processedEvents.set(key, Date.now());

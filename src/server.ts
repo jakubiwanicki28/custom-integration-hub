@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { config, loadOrgCredentials } from './config.js';
 import { logger } from './lib/logger.js';
+import { metrics } from './lib/metrics.js';
 import {
   loadIntegrationCatalog, loadOrganizations, getAllOrganizations,
   getCatalogEntry, importIntegrationModule, registerMountedIntegration,
@@ -38,6 +39,21 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use((req, _res, next) => {
   logger.info({ method: req.method, path: req.path }, 'request');
+  next();
+});
+
+// Metrics: track all HTTP requests
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    metrics.track({
+      integration: '_http',
+      org: '_global',
+      event: res.statusCode >= 400 ? 'error' : 'success',
+      durationMs: Date.now() - start,
+      meta: { method: req.method, path: req.path, status: String(res.statusCode) },
+    });
+  });
   next();
 });
 
@@ -171,6 +187,9 @@ async function bootstrap() {
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.nodeEnv, totalMounted }, 'Custom Integration Hub started');
   });
+
+  // Start metrics persistence (hourly snapshots to disk)
+  metrics.startPersistence();
 
   let shuttingDown = false;
   function shutdown(signal: string) {

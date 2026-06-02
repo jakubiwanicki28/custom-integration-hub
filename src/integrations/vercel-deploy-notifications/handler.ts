@@ -6,6 +6,7 @@ import type { OrgContext } from '../../lib/org-context.js';
 import { createGitHubClient } from '../../lib/github.js';
 import type { GitHubCommit } from '../../lib/github.js';
 import type { SlackBlock } from '../../lib/slack.js';
+import { metrics } from '../../lib/metrics.js';
 import type { VercelWebhookPayload, DeployState, BranchChannelConfig, ProcessDeployResult } from './types.js';
 
 export function createHandler(ctx: OrgContext) {
@@ -364,22 +365,28 @@ export function createHandler(ctx: OrgContext) {
     res.status(200).json({ status: 'accepted' });
 
     // Process async
+    const trackStart = Date.now();
     try {
       switch (eventType) {
         case 'deployment.created':
           await handleDeploymentCreated(body.payload);
+          metrics.track({ integration: 'vercel-deploy-notifications', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { eventType: 'created' } });
           break;
         case 'deployment.succeeded':
           await handleDeploymentSucceeded(body.payload);
+          metrics.track({ integration: 'vercel-deploy-notifications', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { eventType: 'succeeded' } });
           break;
         case 'deployment.error':
           await handleDeploymentError(body.payload);
+          metrics.track({ integration: 'vercel-deploy-notifications', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { eventType: 'error' } });
           break;
         default:
           log.info({ eventType }, 'Ignoring unhandled Vercel event type');
+          metrics.track({ integration: 'vercel-deploy-notifications', org: ctx.org.id, event: 'skip', meta: { eventType: eventType ?? 'unknown' } });
       }
     } catch (err) {
       log.error({ err, eventType }, 'Error processing Vercel webhook');
+      metrics.track({ integration: 'vercel-deploy-notifications', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { eventType: eventType ?? 'unknown' } });
     }
   }
 

@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { getPersonName, getDealName, getDealStage, getPersonEmail, getPersonPhone } from '../../lib/attio.js';
 import type { SlackBlock } from '../../lib/slack.js';
 import type { OrgContext, AttioClient, SlackClient, ChannelMapping } from '../../lib/org-context.js';
+import { metrics } from '../../lib/metrics.js';
 import type { AttioWebhookPayload, LeadNotificationData, ProcessLeadResult } from './types.js';
 
 const IDEMPOTENCY_TTL = 60 * 60 * 1000; // 1 hour
@@ -117,20 +118,26 @@ export function createHandler(ctx: OrgContext) {
     const key = idempotencyKey || `${listId}:${dealRecordId}`;
     if (processedEntries.has(key)) {
       log.info({ key }, 'Entry already processed, skipping');
+      metrics.track({ integration: 'slack-lead-notifications', org: ctx.org.id, event: 'dedup' });
       return;
     }
     processedEntries.set(key, Date.now());
 
     const data = await enrichLeadData(dealRecordId, listId);
-    if (!data) return;
+    if (!data) {
+      metrics.track({ integration: 'slack-lead-notifications', org: ctx.org.id, event: 'error', meta: { reason: 'enrich_failed' } });
+      return;
+    }
 
     const { blocks, fallbackText } = formatSlackBlocks(data);
     const sent = await slack.postMessage(mapping.channelId, blocks, fallbackText);
 
     if (sent) {
       log.info({ dealRecordId, listName: mapping.listName, channelName: mapping.channelName, personName: data.personName }, 'Lead notification sent');
+      metrics.track({ integration: 'slack-lead-notifications', org: ctx.org.id, event: 'success', meta: { listName: mapping.listName } });
     } else {
       log.error({ dealRecordId, listName: mapping.listName, channelName: mapping.channelName }, 'Failed to send lead notification');
+      metrics.track({ integration: 'slack-lead-notifications', org: ctx.org.id, event: 'error', meta: { reason: 'slack_post_failed', listName: mapping.listName } });
     }
   }
 

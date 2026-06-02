@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { getPersonName, getDealName } from '../../lib/attio.js';
 import type { OrgContext } from '../../lib/org-context.js';
+import { metrics } from '../../lib/metrics.js';
 import type { CloudTalkCall } from '../../lib/cloudtalk.js';
 import { formatNote } from './summarize.js';
 import type { CloudTalkWebhookPayload } from './types.js';
@@ -44,13 +45,18 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
 
   async function processCallCore(call: CloudTalkCall): Promise<ProcessResult> {
     const callId = call.id;
+    const trackStart = Date.now();
 
     if (call.duration < MIN_CALL_DURATION) {
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', meta: { reason: 'short_call' } });
       return { success: false, error: `Rozmowa za krótka (${call.duration}s < ${MIN_CALL_DURATION}s)` };
     }
 
     const phoneNumber = call.externalNumber;
-    if (!phoneNumber) return { success: false, error: 'Brak numeru telefonu' };
+    if (!phoneNumber) {
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', meta: { reason: 'no_phone' } });
+      return { success: false, error: 'Brak numeru telefonu' };
+    }
 
     let person = await attio.findPersonByPhone(phoneNumber);
 
@@ -61,7 +67,10 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
       }
     }
 
-    if (!person) return { success: false, error: `Osoba ${phoneNumber} nie znaleziona w Attio` };
+    if (!person) {
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'skip', durationMs: Date.now() - trackStart, meta: { reason: 'person_not_found' } });
+      return { success: false, error: `Osoba ${phoneNumber} nie znaleziona w Attio` };
+    }
 
     const personName = getPersonName(person);
     const deal = await attio.pickBestDeal(person);
@@ -102,6 +111,7 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
       }
     }
 
+    metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { notesCreated: String(notesCreated) } });
     return { success: true, personName, dealName: dealName ?? undefined, notesCreated };
   }
 
@@ -135,6 +145,7 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
 
     if (processedCalls.has(callId)) {
       log.info({ callId }, 'Call already processed, skipping webhook');
+      metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'dedup' });
       res.status(200).json({ status: 'already_processed' });
       return;
     }

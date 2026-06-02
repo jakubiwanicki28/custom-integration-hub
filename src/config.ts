@@ -39,6 +39,12 @@ export const config = {
     password: process.env.DASHBOARD_PASSWORD || '',
     cookieSecret: resolveCookieSecret(),
   },
+
+  monitoring: {
+    slackChannelId: process.env.MONITORING_SLACK_CHANNEL_ID || '',
+    vercelApiToken: process.env.VERCEL_API_TOKEN || '',
+    vercelTeamId: process.env.VERCEL_TEAM_ID || '',
+  },
 } as const;
 
 // Per-org credentials — loaded on demand via env prefix

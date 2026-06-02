@@ -1,5 +1,6 @@
 import type { OrgContext } from '../../lib/org-context.js';
 import { fetchWithTimeout } from '../../lib/fetch.js';
+import { metrics } from '../../lib/metrics.js';
 import type { LeadIntakeRequest, LeadIntakeResponse, CampaignConfig } from './types.js';
 
 export function createHandler(ctx: OrgContext) {
@@ -140,8 +141,12 @@ export function createHandler(ctx: OrgContext) {
   // --- Main pipeline ---
 
   async function processLead(data: LeadIntakeRequest): Promise<LeadIntakeResponse> {
+    const trackStart = Date.now();
     const campaignConfig = campaigns[data.campaign];
-    if (!campaignConfig) return { ok: false, error: `Unknown campaign: ${data.campaign}` };
+    if (!campaignConfig) {
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', meta: { reason: 'unknown_campaign', campaign: data.campaign } });
+      return { ok: false, error: `Unknown campaign: ${data.campaign}` };
+    }
 
     // 1. Upsert Person
     const personId = await attio.upsertPerson({
@@ -150,7 +155,10 @@ export function createHandler(ctx: OrgContext) {
       lastName: data.lastName,
       phone: data.phone,
     });
-    if (!personId) return { ok: false, error: 'Failed to create person in CRM' };
+    if (!personId) {
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { reason: 'person_create_failed', campaign: data.campaign } });
+      return { ok: false, error: 'Failed to create person in CRM' };
+    }
 
     // 2. Create Deal (include company in name if present)
     const fullName = `${data.firstName} ${data.lastName}`.trim();
@@ -163,7 +171,10 @@ export function createHandler(ctx: OrgContext) {
       ownerId: dealOwnerId,
       personRecordId: personId,
     });
-    if (!dealId) return { ok: false, error: 'Failed to create deal in CRM' };
+    if (!dealId) {
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { reason: 'deal_create_failed', campaign: data.campaign } });
+      return { ok: false, error: 'Failed to create deal in CRM' };
+    }
 
     // 3. Add to campaign list (entry_values conditional on list having a status attribute)
     const entryValues: Record<string, unknown> = {};
@@ -188,6 +199,7 @@ export function createHandler(ctx: OrgContext) {
     }
 
     log.info({ personId, dealId, entryId, campaign: data.campaign, email: data.email }, 'Lead processed');
+    metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { campaign: data.campaign } });
     return { ok: true };
   }
 

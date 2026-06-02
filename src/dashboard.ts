@@ -10,6 +10,7 @@ import type { AttioWebhook, AttioListEntry } from './lib/attio.js';
 import type { CloudTalkCall } from './lib/cloudtalk.js';
 import type { ChannelMapping } from './lib/org-context.js';
 import { createLogger } from './lib/logger.js';
+import { metrics } from './lib/metrics.js';
 
 const log = createLogger('dashboard');
 
@@ -415,6 +416,20 @@ dashboardRouter.post('/test/:orgId/calendly-booking-sync/sync', async (req: Requ
     log.error({ err, path: req.path }, 'Dashboard route error');
     res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
   }
+});
+
+// --- Metrics API ---
+
+dashboardRouter.get('/api/metrics', (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const windowMs = Math.min(parseInt(req.query.window as string, 10) || 3_600_000, 24 * 60 * 60 * 1000);
+  res.json(metrics.getSnapshot(windowMs));
+});
+
+dashboardRouter.get('/api/metrics/events', (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const windowMs = Math.min(parseInt(req.query.window as string, 10) || 3_600_000, 24 * 60 * 60 * 1000);
+  res.json(metrics.getEvents(windowMs));
 });
 
 // --- Helpers ---
