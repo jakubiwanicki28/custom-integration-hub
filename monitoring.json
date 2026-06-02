@@ -1,0 +1,24 @@
+{
+  "vercel": {
+    "pollIntervalMs": 600000,
+    "projects": {
+      "ww-partners": [
+        { "id": "prj_s9H7FMkRoJL4Y3VKCiws1UZyGpmn", "name": "wwp-lp-1", "label": "LP Akademia A" },
+        { "id": "prj_cNMZ0GFp7qm9B4luVOMkvMHAZtX5", "name": "akademiabiznesup2", "label": "LP Akademia B" },
+        { "id": "prj_j6YHHELpA1bgof7UVZb0hAgAMwHK", "name": "raport-akademia", "label": "LP Raport" }
+      ],
+      "velocy": [
+        { "id": "prj_Xm1XrNUG87zy5MQ3QpZRv4j0ZzdS", "name": "service-lp-velocy-projektanci-a", "label": "LP Velocy A" },
+        { "id": "prj_QI5QEbAVEcO33qUkAXlNPAg6OALz", "name": "service-lp-velocy-projektanci-b", "label": "LP Velocy B" }
+      ],
+      "bookclinic": [
+        { "id": "prj_RsvWwKBIFkAHznt8eCq9WzU9kpf1", "name": "example-clinic-website", "label": "BookClinic App" }
+      ]
+    }
+  },
+  "slack": {
+    "channelId": "C0B7U6G0U49",
+    "dailyDigestHour": 23,
+    "timezone": "Europe/Warsaw"
+  }
+}

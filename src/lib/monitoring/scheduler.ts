@@ -2,7 +2,9 @@ import { config } from '../../config.js';
 import { logger } from '../logger.js';
 import { metrics } from '../metrics.js';
 import { createSlackClient } from '../slack.js';
+import { createVercelClient } from '../vercel.js';
 import { loadMonitoringConfig } from './config.js';
+import { createVercelMonitor } from './vercel-monitor.js';
 import { analyzeHourly, analyzeDaily, cleanupOldAnalyses } from './analyst.js';
 import { formatAnomalyAlert, formatDailyDigest } from './reporter.js';
 import type { VercelProjectHealth } from './types.js';
@@ -27,13 +29,22 @@ export function startMonitoring(): () => void {
   let stopping = false;
   let lastAlertTime = 0;
 
-  // Placeholder for Vercel health — will be populated by Phase 3
   let vercelHealth: VercelProjectHealth[] = [];
+  let stopVercelMonitor: (() => void) | null = null;
 
-  // Export setter for vercel health (used by vercel-monitor in Phase 3)
-  (startMonitoring as { setVercelHealth?: (h: VercelProjectHealth[]) => void }).setVercelHealth = (h) => {
-    vercelHealth = h;
-  };
+  // Start Vercel health monitoring if configured
+  if (config.monitoring.vercelApiToken) {
+    const vercelClient = createVercelClient(
+      config.monitoring.vercelApiToken,
+      config.monitoring.vercelTeamId,
+      log.child({ lib: 'vercel' }),
+    );
+    const vercelMonitor = createVercelMonitor(vercelClient, monitoringConfig.vercel.projects, log);
+    stopVercelMonitor = vercelMonitor.startPolling(monitoringConfig.vercel.pollIntervalMs, (health) => {
+      vercelHealth = health;
+    });
+    log.info({ projects: Object.values(monitoringConfig.vercel.projects).flat().length }, 'Vercel health monitor started');
+  }
 
   // --- Hourly analysis ---
 
@@ -245,6 +256,7 @@ export function startMonitoring(): () => void {
     clearInterval(hourlyInterval);
     clearInterval(microInterval);
     clearTimeout(dailyTimer);
+    if (stopVercelMonitor) stopVercelMonitor();
     log.info('Monitoring stopped');
   };
 }
