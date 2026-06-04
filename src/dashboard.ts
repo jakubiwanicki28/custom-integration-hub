@@ -512,7 +512,7 @@ async function enrichListEntries(attio: import('./lib/org-context.js').AttioClie
 }
 
 function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function formatUptime(seconds: number): string {
@@ -971,7 +971,7 @@ function renderMonitoringPage(
       const highlightStyle = isHighlighted ? 'border-color:#1f6feb;box-shadow:0 0 8px #1f6feb44;' : '';
 
       let anomalyHtml = '';
-      if (a.anomalies.length > 0) {
+      if (a.anomalies && a.anomalies.length > 0) {
         anomalyHtml = a.anomalies.map(an =>
           `<div style="font-size:12px;margin-top:4px;color:#c9d1d9">
             <span style="color:${an.severity === 'high' ? '#f85149' : an.severity === 'medium' ? '#d29922' : '#58a6ff'}">●</span>
