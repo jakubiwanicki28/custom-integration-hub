@@ -607,7 +607,7 @@ const STYLES = `
   .badge-hourly { background: #58a6ff20; color: #58a6ff; }
   .badge-daily { background: #8957e533; color: #bc8cff; }
   .badge-micro { background: #d2992233; color: #d29922; }
-  .detail-toggle { cursor: pointer; color: #58a6ff; font-size: 12px; text-decoration: none; }
+  .detail-toggle { cursor: pointer; color: #58a6ff; font-size: 12px; text-decoration: none; background: none; border: none; padding: 0; font-family: inherit; }
   .detail-content { display: none; margin-top: 12px; padding: 12px; background: #0d1117; border-radius: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; }
   .vercel-table td code { font-size: 11px; }
   footer { text-align: center; padding: 24px 0 8px; font-size: 12px; color: #30363d; }
@@ -991,7 +991,7 @@ function renderMonitoringPage(
         ${a.summary ? `<div style="font-size:14px;color:#c9d1d9;margin-bottom:4px">${escapeHtml(a.summary)}</div>` : ''}
         ${anomalyHtml}
         ${a.recommendations && a.recommendations.length > 0 ? `<div style="margin-top:6px;font-size:12px;color:#8b949e">${a.recommendations.map(r => `💡 ${escapeHtml(r)}`).join('<br>')}</div>` : ''}
-        <a class="detail-toggle" onclick="var el=document.getElementById('${detailId}');el.style.display=el.style.display==='block'?'none':'block'">Pokaż prompt/odpowiedź AI ▾</a>
+        <button type="button" class="detail-toggle" onclick="var el=document.getElementById('${detailId}');el.style.display=el.style.display==='block'?'none':'block'">Pokaż prompt/odpowiedź AI ▾</button>
         <div class="detail-content" id="${detailId}"><strong>PROMPT:</strong>\n${escapeHtml(a.prompt || '(brak)')}\n\n<strong>ODPOWIEDŹ AI:</strong>\n${escapeHtml(a.rawResponse || '(brak)')}</div>
       </div>`;
     }).join('');

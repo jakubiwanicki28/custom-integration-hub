@@ -5,7 +5,7 @@ import { createSlackClient } from '../slack.js';
 import { createVercelClient } from '../vercel.js';
 import { loadMonitoringConfig } from './config.js';
 import { createVercelMonitor } from './vercel-monitor.js';
-import { analyzeHourly, analyzeDaily, cleanupOldAnalyses } from './analyst.js';
+import { analyzeHourly, analyzeDaily, persistAnalysis, cleanupOldAnalyses } from './analyst.js';
 import { formatAnomalyAlert, formatDailyDigest } from './reporter.js';
 import type { VercelProjectHealth } from './types.js';
 
@@ -70,7 +70,14 @@ export function startMonitoring(): () => void {
       const analysis = await analyzeHourly(current, baseline, vercelHealth);
       if (!analysis) return;
 
+      persistAnalysis(analysis);
       log.info({ id: analysis.id, status: analysis.status, anomalies: analysis.anomalies.length }, 'Hourly analysis complete');
+
+      // Suppress Slack alerts during cold start (no baseline = unreliable)
+      if (!baseline && analysis.status !== 'normal') {
+        log.info({ id: analysis.id, status: analysis.status }, 'Suppressing alert during cold start (no baseline)');
+        return;
+      }
 
       // Only alert on anomaly/critical, with throttling
       if (analysis.status !== 'normal' && Date.now() - lastAlertTime >= ALERT_THROTTLE_MS) {
@@ -101,6 +108,7 @@ export function startMonitoring(): () => void {
       const analysis = await analyzeDaily(todaySnapshots, vercelHealth);
       if (!analysis) return;
 
+      persistAnalysis(analysis);
       const daySnapshot = analysis.snapshot;
       const { blocks, text } = formatDailyDigest(analysis, daySnapshot);
       const sent = await slack.postMessage(channelId, blocks, text);
@@ -119,44 +127,37 @@ export function startMonitoring(): () => void {
     if (stopping) return;
 
     try {
-      // Lightweight: check last 15 minutes for critical issues
-      const recent = metrics.getSnapshot(15 * 60 * 1000);
+      // Skip micro-checks during cold start (no baseline = no reference point)
+      const baseline = computeBaseline();
+      if (!baseline) return;
 
-      // Check for high error rate
+      const recent = metrics.getSnapshot(15 * 60 * 1000);
       const errorRate = recent.totals.total > 0
         ? recent.totals.error / recent.totals.total
         : 0;
 
-      // Check if during business hours with zero activity
-      const warsawHour = parseInt(
-        new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Warsaw', hour: 'numeric', hour12: false }).format(new Date()),
-        10,
-      );
-      const isBusinessHours = warsawHour >= 8 && warsawHour < 20;
-      const isWeekday = new Date().getDay() >= 1 && new Date().getDay() <= 5;
-
-      // Only escalate if: error rate > 50% with at least 3 events, OR zero events during peak hours
-      const criticalErrorRate = errorRate > 0.5 && recent.totals.total >= 3;
-      const zeroActivity = isBusinessHours && isWeekday && recent.totals.total === 0 && recent.http.total === 0;
-
-      if (!criticalErrorRate && !zeroActivity) return;
-
-      // Throttle: still max 1 alert per hour
+      // Only alert on critical error rate (50%+ with 5+ events)
+      if (!(errorRate > 0.5 && recent.totals.total >= 5)) return;
       if (Date.now() - lastAlertTime < ALERT_THROTTLE_MS) return;
 
-      // Run a quick AI analysis for the critical situation
-      const baseline = computeBaseline();
-      const analysis = await analyzeHourly(recent, baseline, vercelHealth);
-      if (!analysis || analysis.status === 'normal') return;
+      // Rule-based alert — no AI call, no persistence
+      const alert: import('./types.js').PersistedAnalysis = {
+        id: `micro-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        type: 'micro',
+        status: 'critical',
+        summary: `Krytyczny error rate: ${Math.round(errorRate * 100)}% (${recent.totals.error}/${recent.totals.total} w ostatnich 15 min)`,
+        anomalies: [{ metric: 'Error rate integracji', expected: '<10%', actual: `${Math.round(errorRate * 100)}%`, severity: 'high' }],
+        snapshot: recent,
+        prompt: '',
+        rawResponse: '',
+      };
 
-      // Override type to 'micro'
-      analysis.type = 'micro';
-
-      const { blocks, text } = formatAnomalyAlert(analysis);
+      const { blocks, text } = formatAnomalyAlert(alert);
       const sent = await slack.postMessage(channelId, blocks, text);
       if (sent) {
         lastAlertTime = Date.now();
-        log.info({ reason: criticalErrorRate ? 'high_error_rate' : 'zero_activity' }, 'Micro-check alert sent');
+        log.info({ errorRate: Math.round(errorRate * 100) }, 'Micro-check critical alert sent');
       }
     } catch (err) {
       log.error({ err }, 'Micro-check failed — monitoring continues');

@@ -57,14 +57,13 @@ export async function analyzeHourly(
         prompt: promptText,
         rawResponse: '[AI unavailable]',
       };
-      persistAnalysis(fallback);
       return fallback;
     }
 
     const parsed = parseAIResponse(raw);
     if (!parsed) return null;
 
-    const analysis: PersistedAnalysis = {
+    return {
       id: generateAnalysisId('hourly'),
       timestamp: new Date().toISOString(),
       type: 'hourly',
@@ -76,9 +75,6 @@ export async function analyzeHourly(
       prompt: promptText,
       rawResponse: raw,
     };
-
-    persistAnalysis(analysis);
-    return analysis;
   } catch (err) {
     log.error({ err }, 'Hourly analysis failed');
     return null;
@@ -107,7 +103,6 @@ export async function analyzeDaily(
         prompt: promptText,
         rawResponse: '[AI unavailable]',
       };
-      persistAnalysis(fallback);
       return fallback;
     }
 
@@ -134,7 +129,7 @@ export async function analyzeDaily(
       daySnapshot.http.errors += hs.snapshot.http.errors;
     }
 
-    const analysis: PersistedAnalysis = {
+    return {
       id: generateAnalysisId('daily'),
       timestamp: new Date().toISOString(),
       type: 'daily',
@@ -146,9 +141,6 @@ export async function analyzeDaily(
       prompt: promptText,
       rawResponse: raw,
     };
-
-    persistAnalysis(analysis);
-    return analysis;
   } catch (err) {
     log.error({ err }, 'Daily analysis failed');
     return null;
@@ -157,7 +149,7 @@ export async function analyzeDaily(
 
 // --- Persistence ---
 
-function persistAnalysis(analysis: PersistedAnalysis): void {
+export function persistAnalysis(analysis: PersistedAnalysis): void {
   try {
     if (!existsSync(ANALYSES_DIR)) {
       mkdirSync(ANALYSES_DIR, { recursive: true });

@@ -73,10 +73,16 @@ export function buildHourlyAnalysisPrompt(
   userContent += `\n\nRespond with JSON:
 {
   "status": "normal" | "anomaly" | "critical",
-  "summary": "1-2 sentences in Polish describing the situation",
-  "anomalies": [{ "metric": "integration/org", "expected": "value", "actual": "value", "severity": "low|medium|high" }]
+  "summary": "1-2 sentences in Polish. Include probable cause and recommended action if anomaly.",
+  "anomalies": [{ "metric": "human-readable description in Polish", "expected": "human-readable value", "actual": "human-readable value", "severity": "low|medium|high" }]
 }
-If everything is normal, set status to "normal" and anomalies to [].`;
+
+IMPORTANT RULES:
+- "metric" must be a human-readable Polish description, e.g. "Błędy HTTP 404" NOT "http_status_404"
+- "expected"/"actual" must be readable, e.g. "8 leadów/h" NOT "8"
+- If BASELINE is unavailable (cold start): default to "normal" unless there are actual errors (HTTP 5xx, integration failures). Low volume or zero activity during cold start is NOT an anomaly.
+- 404 errors from unknown paths are likely bots/scanners — severity "low" at most
+- If everything is normal, set status to "normal" and anomalies to [].`;
 
   return [
     { role: 'system', content: SYSTEM_PROMPT },
