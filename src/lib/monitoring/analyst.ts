@@ -13,7 +13,7 @@ const ANALYSES_DIR = join(process.cwd(), 'data', 'analyses');
 const RETENTION_DAYS = 30;
 const MODEL = process.env.MONITORING_AI_MODEL || config.openrouter.model;
 
-function parseAIResponse(raw: string): { status: string; summary: string; anomalies: AnalysisResult['anomalies']; recommendations?: string[] } | null {
+function parseAIResponse(raw: string): { status: string; summary: string; anomalies: AnalysisResult['anomalies']; recommendations?: string[]; action_required?: boolean } | null {
   try {
     // Strip markdown code fences if present
     const cleaned = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
@@ -68,6 +68,7 @@ export async function analyzeHourly(
       timestamp: new Date().toISOString(),
       type: 'hourly',
       status: (parsed.status as AnalysisResult['status']) || 'normal',
+      action_required: parsed.action_required ?? false,
       summary: parsed.summary || '',
       anomalies: parsed.anomalies || [],
       recommendations: parsed.recommendations,
@@ -135,6 +136,7 @@ export async function analyzeDaily(
       timestamp: new Date().toISOString(),
       type: 'daily',
       status: (parsed.status as AnalysisResult['status']) || 'normal',
+      action_required: parsed.action_required ?? false,
       summary: parsed.summary || '',
       anomalies: parsed.anomalies || [],
       recommendations: parsed.recommendations,

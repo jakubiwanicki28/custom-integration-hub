@@ -1,6 +1,17 @@
 import type { MetricsSnapshot } from '../metrics.js';
 import type { VercelProjectHealth } from './types.js';
 
+// Known bot/scanner paths — tagged in prompt so AI knows to ignore them
+const KNOWN_BOT_PATHS = [
+  '/wp-admin', '/wp-login.php', '/xmlrpc.php', '/wp-content', '/wp-includes',
+  '/.env', '/.git', '/config', '/admin', '/phpmyadmin', '/pma',
+  '/favicon.ico', '/robots.txt', '/sitemap.xml',
+];
+
+function isBotPath(path: string): boolean {
+  return KNOWN_BOT_PATHS.some(bp => path.startsWith(bp) || path === bp);
+}
+
 function formatSnapshot(snapshot: MetricsSnapshot, label: string): string {
   const lines: string[] = [`=== ${label} ===`];
   const { totals, byIntegration, http } = snapshot;
@@ -13,9 +24,29 @@ function formatSnapshot(snapshot: MetricsSnapshot, label: string): string {
     lines.push(`HTTP by status: ${statusParts}`);
   }
 
+  // Top HTTP paths with bot detection
+  if (http.topPaths && http.topPaths.length > 0) {
+    lines.push('');
+    lines.push('TOP HTTP PATHS:');
+    for (const p of http.topPaths) {
+      const statusDetail = Object.entries(p.statuses).map(([s, c]) => `${c}×${s}`).join(', ');
+      const botTag = isBotPath(p.path) ? '  ← bot/scanner' : '';
+      lines.push(`  ${p.path}: ${p.count} reqs (${statusDetail})${botTag}`);
+    }
+  }
+
   for (const [name, stats] of Object.entries(byIntegration)) {
     const orgParts = Object.entries(stats.byOrg).map(([o, c]) => `${o}:${c}`).join(', ');
     lines.push(`  ${name}: ${stats.total} total (${stats.success} ok, ${stats.error} err, ${stats.skip} skip) avg ${stats.avgDurationMs}ms max ${stats.maxDurationMs}ms [${orgParts}]`);
+  }
+
+  // Error/skip reasons
+  if (snapshot.errorReasons && Object.keys(snapshot.errorReasons).length > 0) {
+    lines.push('');
+    lines.push('ERROR/SKIP REASONS:');
+    for (const [reason, count] of Object.entries(snapshot.errorReasons).sort((a, b) => b[1] - a[1])) {
+      lines.push(`  ${reason}: ${count}`);
+    }
   }
 
   return lines.join('\n');
@@ -37,17 +68,29 @@ function formatVercelHealth(projects: VercelProjectHealth[]): string {
   return lines.join('\n');
 }
 
-const SYSTEM_PROMPT = `You are a monitoring analyst for Custom Integration Hub — a business automation server handling CRM syncs, lead intake, call transcription, deploy notifications, and Slack alerts for multiple organizations.
+const SYSTEM_PROMPT = `You are a monitoring analyst for Custom Integration Hub — a business automation server on a single VPS handling CRM syncs, lead intake, call transcription, deploy notifications, and Slack alerts for multiple organizations.
 
-Organizations:
-- ww-partners: consulting firm (Akademia Biznesu campaign). Active integrations: lead-intake, calendly-booking-sync, cloudtalk-call-notes, slack-lead-notifications
-- velocy: software house. Active integrations: lead-intake, slack-lead-notifications
-- bookclinic: SaaS medical clinic app. Active integrations: vercel-deploy-notifications
+ORGANIZATIONS:
+- ww-partners: consulting firm (Akademia Biznesu, Raport Strategiczny campaigns). Integrations: lead-intake, calendly-booking-sync, cloudtalk-call-notes, slack-lead-notifications
+- velocy: software house. Integrations: lead-intake, slack-lead-notifications
+- bookclinic: SaaS medical clinic app. Integrations: vercel-deploy-notifications, github-pr-automation
 
-Business hours: 8:00-20:00 CET (leads from Meta ads). Weekends: lower volume but not zero.
-cloudtalk-call-notes: business hours only (9-17 Mon-Fri).
+KNOWN NOISE (do NOT alert, action_required: false):
+- 404 on paths marked "bot/scanner" (e.g. /wp-admin, /.env, /xmlrpc.php) = internet bots probing. Normal internet noise, ignore completely.
+- 429 responses = rate limiter WORKING CORRECTLY. This is the server defending itself. Only concerning if blocking legitimate endpoints like /{org}/lead-intake with real user traffic behind it.
+- Low/zero activity outside business hours (20:00-08:00 CET) and weekends = normal.
+- "person_not_found" and "short_call" skip reasons = normal business logic (not our leads, calls too short).
+- Dedup events = idempotency working correctly. Healthy sign.
 
-Analyze the metrics and identify anomalies. Be terse and precise. Respond in JSON only.`;
+REAL PROBLEMS (action_required: true):
+- HTTP 5xx on any path = server error, investigate immediately
+- Integration errors with reason "unhandled_error" = code bug
+- Integration errors with reason "slack_post_failed" or "enrich_failed" = external service down
+- Zero lead-intake events during business hours (10-18 CET weekdays) when baseline shows normal activity = LP or CRM may be down
+- Vercel project in ERROR state = build broken, deploy failed
+- Sustained error rate > 30% on a single integration = systemic issue
+
+RESPONSE FORMAT: JSON only, respond in Polish. Set action_required: true ONLY when human intervention is needed.`;
 
 export function buildHourlyAnalysisPrompt(
   current: MetricsSnapshot,
@@ -64,7 +107,7 @@ export function buildHourlyAnalysisPrompt(
   if (baseline) {
     userContent += '\n\n' + formatSnapshot(baseline, 'BASELINE (avg same hour last 7 days)');
   } else {
-    userContent += '\n\nBASELINE: Not available yet (cold start, < 7 days of data)';
+    userContent += '\n\nBASELINE: Not available yet (cold start, < 7 days of data). Be conservative — default to normal unless actual server errors.';
   }
 
   const vercelSection = formatVercelHealth(vercelHealth);
@@ -73,16 +116,16 @@ export function buildHourlyAnalysisPrompt(
   userContent += `\n\nRespond with JSON:
 {
   "status": "normal" | "anomaly" | "critical",
-  "summary": "1-2 sentences in Polish. Include probable cause and recommended action if anomaly.",
-  "anomalies": [{ "metric": "human-readable description in Polish", "expected": "human-readable value", "actual": "human-readable value", "severity": "low|medium|high" }]
+  "action_required": true | false,
+  "summary": "Po polsku: (1) Co się dzieje, (2) Czy wymaga akcji, (3) Jeśli tak — co zrobić. Jeśli to szum — napisz że nie wymaga uwagi.",
+  "anomalies": [{ "metric": "czytelny opis po polsku", "expected": "czytelna wartość", "actual": "czytelna wartość", "severity": "low|medium|high" }]
 }
 
-IMPORTANT RULES:
-- "metric" must be a human-readable Polish description, e.g. "Błędy HTTP 404" NOT "http_status_404"
-- "expected"/"actual" must be readable, e.g. "8 leadów/h" NOT "8"
-- If BASELINE is unavailable (cold start): default to "normal" unless there are actual errors (HTTP 5xx, integration failures). Low volume or zero activity during cold start is NOT an anomaly.
-- 404 errors from unknown paths are likely bots/scanners — severity "low" at most
-- If everything is normal, set status to "normal" and anomalies to [].`;
+RULES:
+- action_required = true ONLY when human must act. Bots blocked, rate limiting, low night traffic = false.
+- "metric" must be human-readable Polish, e.g. "Błędy HTTP 404 na hubie" NOT "http_status_404"
+- If cold start (no baseline): default to "normal" + action_required: false unless 5xx or integration failures
+- If everything is fine: status "normal", action_required: false, empty anomalies`;
 
   return [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -104,7 +147,7 @@ export function buildDailyDigestPrompt(
   let totalEvents = 0, totalSuccess = 0, totalError = 0, totalHttp = 0, totalHttpErr = 0;
   const byIntegration: Record<string, { total: number; success: number; error: number }> = {};
 
-  for (const { hour, snapshot } of hourlySnapshots) {
+  for (const { snapshot } of hourlySnapshots) {
     totalEvents += snapshot.totals.total;
     totalSuccess += snapshot.totals.success;
     totalError += snapshot.totals.error;
@@ -141,13 +184,14 @@ export function buildDailyDigestPrompt(
   userContent += `\n\nProvide a daily summary in Polish. Include:
 1. Overall health assessment
 2. Notable patterns or trends
-3. Any concerns or recommendations
+3. Whether any action is needed
 
 Respond with JSON:
 {
   "status": "normal" | "anomaly" | "critical",
-  "summary": "3-5 sentences in Polish — daily summary for the team",
-  "anomalies": [{ "metric": "...", "expected": "...", "actual": "...", "severity": "low|medium|high" }],
+  "action_required": true | false,
+  "summary": "3-5 sentences in Polish — daily summary. Mention if bots were active (and that it's normal noise).",
+  "anomalies": [{ "metric": "czytelny opis", "expected": "wartość", "actual": "wartość", "severity": "low|medium|high" }],
   "recommendations": ["actionable recommendation in Polish"]
 }`;
 

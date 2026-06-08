@@ -987,6 +987,7 @@ function renderMonitoringPage(
           <span style="font-weight:600;color:#f0f6fc">${timeStr}</span>
           <span class="badge badge-${a.type}">${a.type}</span>
           <span class="badge badge-${a.status}">${a.status}</span>
+          ${a.action_required === true ? '<span class="badge" style="background:#da363433;color:#f85149">Wymaga akcji</span>' : a.action_required === false ? '<span class="badge" style="background:#21262d;color:#8b949e">Info</span>' : ''}
         </div>
         ${a.summary ? `<div style="font-size:14px;color:#c9d1d9;margin-bottom:4px">${escapeHtml(a.summary)}</div>` : ''}
         ${anomalyHtml}
