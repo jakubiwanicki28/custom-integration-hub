@@ -146,6 +146,7 @@ export function startMonitoring(): () => void {
         timestamp: new Date().toISOString(),
         type: 'micro',
         status: 'critical',
+        action_required: true,
         summary: `Krytyczny error rate: ${Math.round(errorRate * 100)}% (${recent.totals.error}/${recent.totals.total} w ostatnich 15 min)`,
         anomalies: [{ metric: 'Error rate integracji', expected: '<10%', actual: `${Math.round(errorRate * 100)}%`, severity: 'high' }],
         snapshot: recent,
