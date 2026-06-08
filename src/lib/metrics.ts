@@ -26,13 +26,21 @@ export interface IntegrationStats {
   byOrg: Record<string, number>;
 }
 
+export interface PathStats {
+  path: string;
+  count: number;
+  errors: number;
+  statuses: Record<string, number>;
+}
+
 export interface MetricsSnapshot {
   windowMs: number;
   from: number;
   to: number;
   totals: { total: number; success: number; error: number; skip: number; dedup: number };
   byIntegration: Record<string, IntegrationStats>;
-  http: { total: number; errors: number; avgDurationMs: number; byStatus: Record<string, number> };
+  http: { total: number; errors: number; avgDurationMs: number; byStatus: Record<string, number>; topPaths: PathStats[] };
+  errorReasons: Record<string, number>;
 }
 
 export interface HourlySnapshot {
@@ -82,6 +90,8 @@ class MetricsCollector {
     const totals = { total: 0, success: 0, error: 0, skip: 0, dedup: 0 };
     const byIntegration: Record<string, IntegrationStats> = {};
     const http = { total: 0, errors: 0, totalDuration: 0, byStatus: {} as Record<string, number> };
+    const pathMap = new Map<string, { count: number; errors: number; statuses: Record<string, number> }>();
+    const errorReasons: Record<string, number> = {};
 
     for (const e of filtered) {
       if (e.integration === '_http') {
@@ -90,6 +100,13 @@ class MetricsCollector {
         if (e.durationMs) http.totalDuration += e.durationMs;
         const status = e.meta?.status ?? 'unknown';
         http.byStatus[status] = (http.byStatus[status] ?? 0) + 1;
+        // Track per-path stats
+        const path = e.meta?.path ?? '/unknown';
+        if (!pathMap.has(path)) pathMap.set(path, { count: 0, errors: 0, statuses: {} });
+        const ps = pathMap.get(path)!;
+        ps.count++;
+        if (e.event === 'error') ps.errors++;
+        ps.statuses[status] = (ps.statuses[status] ?? 0) + 1;
         continue;
       }
 
@@ -110,6 +127,10 @@ class MetricsCollector {
       else if (e.event === 'dedup') stats.dedup++;
 
       stats.byOrg[e.org] = (stats.byOrg[e.org] ?? 0) + 1;
+      // Track error/skip reasons
+      if ((e.event === 'error' || e.event === 'skip') && e.meta?.reason) {
+        errorReasons[e.meta.reason] = (errorReasons[e.meta.reason] ?? 0) + 1;
+      }
       if (e.durationMs) {
         if (e.durationMs > stats.maxDurationMs) stats.maxDurationMs = e.durationMs;
         // Track for average computation (stored temporarily, cleaned up below)
@@ -130,6 +151,12 @@ class MetricsCollector {
       delete s._durationCount;
     }
 
+    // Build top paths (sorted by count, top 15)
+    const topPaths: PathStats[] = Array.from(pathMap.entries())
+      .map(([path, s]) => ({ path, count: s.count, errors: s.errors, statuses: s.statuses }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 15);
+
     return {
       windowMs,
       from,
@@ -141,7 +168,9 @@ class MetricsCollector {
         errors: http.errors,
         avgDurationMs: http.total > 0 ? Math.round(http.totalDuration / http.total) : 0,
         byStatus: http.byStatus,
+        topPaths,
       },
+      errorReasons,
     };
   }
 

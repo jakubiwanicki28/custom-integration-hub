@@ -99,7 +99,7 @@ export async function analyzeDaily(
         status: 'normal',
         summary: 'Dzienny raport AI niedostępny (błąd API). Metryki zebrane.',
         anomalies: [],
-        snapshot: { windowMs: 0, from: 0, to: 0, totals: { total: 0, success: 0, error: 0, skip: 0, dedup: 0 }, byIntegration: {}, http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {} } },
+        snapshot: { windowMs: 0, from: 0, to: 0, totals: { total: 0, success: 0, error: 0, skip: 0, dedup: 0 }, byIntegration: {}, http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {}, topPaths: [] }, errorReasons: {} },
         prompt: promptText,
         rawResponse: '[AI unavailable]',
       };
@@ -116,7 +116,8 @@ export async function analyzeDaily(
       to: Date.now(),
       totals: { total: 0, success: 0, error: 0, skip: 0, dedup: 0 },
       byIntegration: {},
-      http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {} },
+      http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {}, topPaths: [] },
+      errorReasons: {},
     };
 
     for (const hs of hourlySnapshots) {

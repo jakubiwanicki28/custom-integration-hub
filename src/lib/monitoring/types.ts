@@ -8,6 +8,7 @@ export interface AnalysisResult {
   summary: string;           // AI's Polish-language summary
   anomalies: Anomaly[];
   recommendations?: string[];
+  action_required?: boolean;
 }
 
 export interface Anomaly {

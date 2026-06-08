@@ -79,8 +79,8 @@ export function startMonitoring(): () => void {
         return;
       }
 
-      // Only alert on anomaly/critical, with throttling
-      if (analysis.status !== 'normal' && Date.now() - lastAlertTime >= ALERT_THROTTLE_MS) {
+      // Only alert when AI says action is required, with throttling
+      if (analysis.action_required === true && Date.now() - lastAlertTime >= ALERT_THROTTLE_MS) {
         const { blocks, text } = formatAnomalyAlert(analysis);
         const sent = await slack.postMessage(channelId, blocks, text);
         if (sent) {
@@ -182,8 +182,9 @@ export function startMonitoring(): () => void {
       return acc;
     }, {
       totals: { total: 0, success: 0, error: 0, skip: 0, dedup: 0 },
-      http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {} as Record<string, number> },
+      http: { total: 0, errors: 0, avgDurationMs: 0, byStatus: {} as Record<string, number>, topPaths: [] },
       byIntegration: {} as Record<string, { total: number; success: number; error: number; skip: number; dedup: number; avgDurationMs: number; maxDurationMs: number; byOrg: Record<string, number> }>,
+      errorReasons: {} as Record<string, number>,
       windowMs: HOURLY_INTERVAL,
       from: Date.now() - HOURLY_INTERVAL,
       to: Date.now(),

@@ -707,7 +707,7 @@ function renderDashboardPage(data: {
       <div class="header-left">
         <h1>Integration Hub</h1>
         <nav class="tab-nav"><a href="/dashboard" class="tab tab-active">Integracje</a><a href="/dashboard/monitoring" class="tab">Monitoring</a></nav>
-        <form method="GET" action="/dashboard" style="display:inline"><select name="org" class="org-switcher" onchange="this.form.submit()">
+        <form method="GET" action="/dashboard/" style="display:inline"><select name="org" class="org-switcher" onchange="this.form.submit()">
           ${orgOptions}
         </select><noscript><button type="submit" class="btn-process">Go</button></noscript></form>
       </div>
