@@ -23,8 +23,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"], // Dashboard uses inline styles
-      scriptSrc: ["'self'", "'unsafe-inline'"], // Dashboard uses inline scripts
-      scriptSrcAttr: ["'unsafe-inline'"],       // Dashboard uses inline event handlers (onchange, onclick)
+      scriptSrc: ["'self'", "'unsafe-inline'"], // Dashboard uses inline <script> blocks
       imgSrc: ["'self'", "data:"],
     },
   },

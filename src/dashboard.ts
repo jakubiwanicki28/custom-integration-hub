@@ -658,7 +658,23 @@ function pageShell(title: string, body: string): string {
   <link rel="icon" href="data:,">
   <style>${STYLES}</style>
 </head>
-<body>${body}</body>
+<body>${body}
+<script>
+// Org switcher — navigate on change
+document.querySelector('.org-switcher')?.addEventListener('change', function() {
+  window.location.href = '/dashboard/?org=' + encodeURIComponent(this.value);
+});
+// Detail toggles — expand/collapse AI analysis
+document.querySelectorAll('.detail-toggle').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var id = this.getAttribute('data-target');
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (el) el.style.display = el.style.display === 'block' ? 'none' : 'block';
+  });
+});
+</script>
+</body>
 </html>`;
 }
 
@@ -746,7 +762,7 @@ function renderDashboardPage(data: {
       <div class="header-left">
         <h1>Integration Hub</h1>
         <nav class="tab-nav"><a href="/dashboard" class="tab tab-active">Integracje</a><a href="/dashboard/monitoring" class="tab">Monitoring</a></nav>
-        <select class="org-switcher" onchange="window.location.href='/dashboard/?org='+encodeURIComponent(this.value)">
+        <select class="org-switcher">
           ${orgOptions}
         </select>
       </div>
@@ -1031,7 +1047,7 @@ function renderMonitoringPage(
         ${a.summary ? `<div style="font-size:14px;color:#c9d1d9;margin-bottom:4px">${escapeHtml(a.summary)}</div>` : ''}
         ${anomalyHtml}
         ${a.recommendations && a.recommendations.length > 0 ? `<div style="margin-top:6px;font-size:12px;color:#8b949e">${a.recommendations.map(r => `💡 ${escapeHtml(r)}`).join('<br>')}</div>` : ''}
-        <button type="button" class="detail-toggle" onclick="var el=document.getElementById('${detailId}');el.style.display=el.style.display==='block'?'none':'block'">Pokaż prompt/odpowiedź AI ▾</button>
+        <button type="button" class="detail-toggle" data-target="${detailId}">Pokaż prompt/odpowiedź AI ▾</button>
         <div class="detail-content" id="${detailId}"><strong>PROMPT:</strong>\n${escapeHtml(a.prompt || '(brak)')}\n\n<strong>ODPOWIEDŹ AI:</strong>\n${escapeHtml(a.rawResponse || '(brak)')}</div>
       </div>`;
     }).join('');
