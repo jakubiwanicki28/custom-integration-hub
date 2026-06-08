@@ -2,8 +2,8 @@ import { Router, type Request, type Response } from 'express';
 import { createHmac, timingSafeEqual, randomBytes } from 'crypto';
 import { config } from './config.js';
 import {
-  getAllOrganizations, getMountedIntegration, getMountedIntegrationsForOrg,
-  type MountedIntegration,
+  getAllOrganizations, getOrganization, getMountedIntegration, getMountedIntegrationsForOrg,
+  getCatalogEntry, type MountedIntegration,
 } from './lib/registry.js';
 import { getPersonName, getDealName, getDealStage, getPersonEmail, getPersonPhone } from './lib/attio.js';
 import type { AttioWebhook, AttioListEntry } from './lib/attio.js';
@@ -153,9 +153,31 @@ dashboardRouter.get('/', (req: Request, res: Response) => {
   const csrfToken = setCsrfCookie(res);
   const orgs = getAllOrganizations();
   const selectedOrgId = (req.query.org as string) || orgs[0]?.id || '';
-  const mounted = getMountedIntegrationsForOrg(selectedOrgId);
+  const selectedOrg = getOrganization(selectedOrgId);
 
-  res.send(renderDashboardPage({ uptime: process.uptime(), orgs, selectedOrgId, mounted, csrfToken }));
+  // Build integration list from org CONFIG (organizations.json), not just mounted instances.
+  // This ensures the dashboard always shows all configured integrations even when credentials are missing.
+  const integrationCards: DashboardIntegrationCard[] = [];
+  if (selectedOrg) {
+    for (const orgInt of selectedOrg.integrations) {
+      const catalog = getCatalogEntry(orgInt.integrationId);
+      const mounted = getMountedIntegration(selectedOrgId, orgInt.integrationId);
+      integrationCards.push({
+        orgId: selectedOrgId,
+        integrationId: orgInt.integrationId,
+        name: catalog?.name ?? orgInt.integrationId,
+        description: catalog?.description ?? '',
+        type: catalog?.type ?? 'webhook',
+        triggers: catalog?.triggers ?? [],
+        targets: catalog?.targets ?? [],
+        status: orgInt.status,
+        isMounted: !!mounted,
+      });
+    }
+  }
+
+  res.set('Cache-Control', 'no-store');
+  res.send(renderDashboardPage({ uptime: process.uptime(), orgs, selectedOrgId, integrationCards, csrfToken }));
 });
 
 dashboardRouter.post('/login', (req: Request, res: Response) => {
@@ -471,6 +493,18 @@ dashboardRouter.get('/api/metrics/events', (req: Request, res: Response) => {
 
 // --- Helpers ---
 
+interface DashboardIntegrationCard {
+  orgId: string;
+  integrationId: string;
+  name: string;
+  description: string;
+  type: string;
+  triggers: string[];
+  targets: string[];
+  status: string;
+  isMounted: boolean;
+}
+
 interface LeadEntry {
   dealRecordId: string;
   listId: string;
@@ -665,38 +699,43 @@ function renderDashboardPage(data: {
   uptime: number;
   orgs: import('./lib/org-context.js').OrganizationEntry[];
   selectedOrgId: string;
-  mounted: MountedIntegration[];
+  integrationCards: DashboardIntegrationCard[];
   csrfToken: string;
 }): string {
   const uptime = formatUptime(data.uptime);
-  const active = data.mounted.filter(m => m.status === 'active').length;
-  const dev = data.mounted.filter(m => m.status === 'development').length;
-  const inactive = data.mounted.filter(m => m.status === 'inactive').length;
+  const active = data.integrationCards.filter(c => c.status === 'active').length;
+  const dev = data.integrationCards.filter(c => c.status === 'development').length;
+  const inactive = data.integrationCards.filter(c => c.status === 'inactive').length;
 
   const orgOptions = data.orgs.map(o =>
     `<option value="${escapeHtml(o.id)}" ${o.id === data.selectedOrgId ? 'selected' : ''}>${escapeHtml(o.name)}</option>`
   ).join('');
 
-  const integrationCards = data.mounted.map(m => {
-    const path = `/${m.orgId}/${m.catalogEntry.id}`;
+  const cards = data.integrationCards.map(c => {
+    const path = `/${c.orgId}/${c.integrationId}`;
+    const mountedBadge = c.isMounted
+      ? ''
+      : ' <span class="badge" style="background:#da363433;color:#f85149">nie zamontowana</span>';
     return `
     <div class="integration-card">
       <div class="card-header">
-        <span class="status-dot status-${m.status}"></span>
-        <span class="integration-name">${escapeHtml(m.catalogEntry.name)}</span>
-        <span class="badge badge-${m.catalogEntry.type}">${m.catalogEntry.type}</span>
+        <span class="status-dot status-${c.status}"></span>
+        <span class="integration-name">${escapeHtml(c.name)}</span>
+        <span class="badge badge-${c.type}">${escapeHtml(c.type)}</span>${mountedBadge}
       </div>
-      <div class="description">${escapeHtml(m.catalogEntry.description)}</div>
+      <div class="description">${escapeHtml(c.description)}</div>
       <div class="meta">
         <div class="meta-row"><span class="meta-label">Path</span><code>${escapeHtml(path)}</code></div>
-        <div class="meta-row"><span class="meta-label">Status</span><span class="status-text-${m.status}">${m.status}</span></div>
+        <div class="meta-row"><span class="meta-label">Status</span><span class="status-text-${c.status}">${c.status}</span></div>
       </div>
       <div class="tags">
-        ${m.catalogEntry.triggers.map(t => `<span class="tag-trigger">${escapeHtml(t)}</span>`).join('')}
-        ${m.catalogEntry.targets.map(t => `<span class="tag-target">${escapeHtml(t)}</span>`).join('')}
+        ${c.triggers.map(t => `<span class="tag-trigger">${escapeHtml(t)}</span>`).join('')}
+        ${c.targets.map(t => `<span class="tag-target">${escapeHtml(t)}</span>`).join('')}
       </div>
       <div style="margin-top:12px">
-        <a href="/dashboard/test/${escapeHtml(m.orgId)}/${escapeHtml(m.catalogEntry.id)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Zarządzaj &rarr;</a>
+        ${c.isMounted
+          ? `<a href="/dashboard/test/${escapeHtml(c.orgId)}/${escapeHtml(c.integrationId)}" style="color:#58a6ff;font-size:13px;text-decoration:none">Zarządzaj &rarr;</a>`
+          : '<span style="color:#484f58;font-size:13px">Brak credentiali — sprawdź .env</span>'}
       </div>
     </div>`;
   }).join('');
@@ -707,9 +746,9 @@ function renderDashboardPage(data: {
       <div class="header-left">
         <h1>Integration Hub</h1>
         <nav class="tab-nav"><a href="/dashboard" class="tab tab-active">Integracje</a><a href="/dashboard/monitoring" class="tab">Monitoring</a></nav>
-        <form method="GET" action="/dashboard/" style="display:inline"><select name="org" class="org-switcher" onchange="this.form.submit()">
+        <select class="org-switcher" onchange="window.location.href='/dashboard/?org='+encodeURIComponent(this.value)">
           ${orgOptions}
-        </select><noscript><button type="submit" class="btn-process">Go</button></noscript></form>
+        </select>
       </div>
       <form method="POST" action="/dashboard/logout" style="display:inline">
         <input type="hidden" name="_csrf" value="${data.csrfToken}">
@@ -722,7 +761,7 @@ function renderDashboardPage(data: {
       <div class="stat"><div class="stat-value" style="color:#d29922">${dev}</div><div class="stat-label">Development</div></div>
       <div class="stat"><div class="stat-value" style="color:#484f58">${inactive}</div><div class="stat-label">Nieaktywne</div></div>
     </div>
-    ${integrationCards || '<div style="text-align:center;color:#484f58;padding:40px">Brak integracji dla tej organizacji</div>'}
+    ${cards || '<div style="text-align:center;color:#484f58;padding:40px">Brak integracji dla tej organizacji</div>'}
     <footer>custom-integration-hub.velocy.co</footer>
   </div>`;
 
