@@ -477,6 +477,96 @@ dashboardRouter.post('/test/:orgId/calendly-booking-sync/sync', async (req: Requ
   }
 });
 
+// GET /test/:orgId/fathom-meeting-notes
+dashboardRouter.get('/test/:orgId/fathom-meeting-notes', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  const csrfToken = setCsrfCookie(res);
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'fathom-meeting-notes');
+  if (!mounted) { res.redirect('/dashboard?org=' + orgId); return; }
+
+  const result = req.query.result as string | undefined;
+  const hasFathomKey = !!mounted.ctx.credentials.fathom?.apiKey;
+  const hasNotionClient = !!mounted.ctx.clients.notion;
+  const notionDbId = (mounted.ctx.integrationConfig as Record<string, unknown>).notionDatabaseId as string || '';
+
+  res.send(renderFathomMeetingPanel(orgId, hasFathomKey, hasNotionClient, notionDbId, result, csrfToken));
+});
+
+// POST /test/:orgId/fathom-meeting-notes/register-webhook
+dashboardRouter.post('/test/:orgId/fathom-meeting-notes/register-webhook', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'fathom-meeting-notes');
+  const redirectBase = `/dashboard/test/${orgId}/fathom-meeting-notes`;
+
+  if (!mounted?.instance.handlers.registerWebhook) {
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana'));
+    return;
+  }
+
+  try {
+    const result = await (mounted.instance.handlers.registerWebhook as () => Promise<{ success: boolean; webhookId?: string; error?: string }>)();
+    const msg = result.success
+      ? `ok:Webhook zarejestrowany (ID: ${result.webhookId})`
+      : `error:${result.error ?? 'Nieznany błąd'}`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+  }
+});
+
+// POST /test/:orgId/fathom-meeting-notes/setup-notion
+dashboardRouter.post('/test/:orgId/fathom-meeting-notes/setup-notion', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'fathom-meeting-notes');
+  const redirectBase = `/dashboard/test/${orgId}/fathom-meeting-notes`;
+
+  if (!mounted?.instance.handlers.createNotionDatabase) {
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana'));
+    return;
+  }
+
+  try {
+    const result = await (mounted.instance.handlers.createNotionDatabase as () => Promise<{ success: boolean; databaseId?: string; error?: string }>)();
+    const msg = result.success
+      ? `ok:Database "Spotkania" utworzona! ID: ${result.databaseId} — dodaj do organizations.json`
+      : `error:${result.error ?? 'Nieznany błąd'}`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+  }
+});
+
+// POST /test/:orgId/fathom-meeting-notes/process
+dashboardRouter.post('/test/:orgId/fathom-meeting-notes/process', async (req: Request, res: Response) => {
+  if (!isAuthenticated(req)) { res.redirect('/dashboard'); return; }
+  if (!requireCsrf(req, res)) return;
+  const orgId = param(req, 'orgId');
+  const mounted = getMountedIntegration(orgId, 'fathom-meeting-notes');
+  const redirectBase = `/dashboard/test/${orgId}/fathom-meeting-notes`;
+
+  try {
+    const recordingId = req.body?.recording_id;
+    if (!recordingId) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Brak recording_id')); return; }
+    if (!mounted?.instance.handlers.processManual) { res.redirect(redirectBase + '?result=' + encodeURIComponent('error:Integracja nie zamontowana')); return; }
+
+    const result = await mounted.instance.handlers.processManual(recordingId) as { success: boolean; meetingTitle?: string; slackChannel?: string; notionUrl?: string; error?: string };
+    const msg = result.success
+      ? `ok:${result.meetingTitle ?? '?'} → ${result.slackChannel ?? '?'}${result.notionUrl ? ' + Notion' : ''}`
+      : `error:${result.error ?? 'Nieznany błąd'}`;
+    res.redirect(redirectBase + '?result=' + encodeURIComponent(msg));
+  } catch (err) {
+    log.error({ err, path: req.path }, 'Dashboard route error');
+    res.redirect(redirectBase + '?result=' + encodeURIComponent('error:' + (err instanceof Error ? err.message : 'Nieznany błąd')));
+  }
+});
+
 // --- Metrics API ---
 
 dashboardRouter.get('/api/metrics', (req: Request, res: Response) => {
@@ -943,6 +1033,62 @@ function renderCalendlySyncPanel(
   </div>`;
 
   return pageShell('Calendly Booking Sync', body);
+}
+
+// --- Fathom Meeting Notes Panel ---
+
+function renderFathomMeetingPanel(
+  orgId: string,
+  hasFathomKey: boolean,
+  hasNotionClient: boolean,
+  notionDbId: string,
+  resultParam?: string,
+  csrfToken?: string,
+): string {
+  const safeOrgId = encodeURIComponent(orgId);
+  const basePath = `/dashboard/test/${safeOrgId}/fathom-meeting-notes`;
+  const csrf = `<input type="hidden" name="_csrf" value="${csrfToken ?? ''}">`;
+
+  const statusDot = (ok: boolean) => ok
+    ? '<span style="color:#3fb950;font-weight:bold">OK</span>'
+    : '<span style="color:#f85149;font-weight:bold">Brak</span>';
+
+  const body = `
+  <div class="container">
+    <header><div><a href="/dashboard?org=${safeOrgId}" class="back-link">&larr; Dashboard</a><h1 style="margin-top:8px">Fathom Meeting Notes</h1></div></header>
+    ${renderFlash(resultParam)}
+
+    <div class="section-card">
+      <h3 style="margin-top:0">Status</h3>
+      <table><tbody>
+        <tr><td>Fathom API Key</td><td>${statusDot(hasFathomKey)}</td></tr>
+        <tr><td>Notion Client</td><td>${statusDot(hasNotionClient)}</td></tr>
+        <tr><td>Notion Database ID</td><td>${notionDbId ? '<code>' + escapeHtml(notionDbId) + '</code>' : '<span style="color:#f85149">Nie ustawiony</span>'}</td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="section-card">
+      <h3 style="margin-top:0">Setup</h3>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        ${!notionDbId ? `<form method="POST" action="${basePath}/setup-notion">${csrf}<button type="submit" class="btn-process" style="background:#2f81f7;color:#fff;padding:8px 16px;border:none;border-radius:6px;cursor:pointer">Utw\u00f3rz database &quot;Spotkania&quot;</button></form>` : ''}
+        <form method="POST" action="${basePath}/register-webhook">${csrf}<button type="submit" class="btn-process" style="background:#238636;color:#fff;padding:8px 16px;border:none;border-radius:6px;cursor:pointer">Zarejestruj webhook Fathom</button></form>
+      </div>
+      ${!notionDbId ? '<p style="color:#848d97;font-size:13px;margin-top:8px">Po utworzeniu database skopiuj ID i dodaj do <code>organizations.json</code> &rarr; <code>notionDatabaseId</code></p>' : ''}
+    </div>
+
+    <div class="section-card">
+      <h3 style="margin-top:0">Przetwarzanie r\u0119czne</h3>
+      <form method="POST" action="${basePath}/process" style="display:flex;gap:8px;align-items:center">
+        ${csrf}
+        <input type="text" name="recording_id" placeholder="Recording ID z Fathom" style="flex:1;padding:8px 12px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-family:monospace" required>
+        <button type="submit" class="btn-process" style="padding:8px 16px;border-radius:6px">Przetw\u00f3rz</button>
+      </form>
+    </div>
+
+    <footer>custom-integration-hub.velocy.co</footer>
+  </div>`;
+
+  return pageShell('Fathom Meeting Notes', body);
 }
 
 // --- Monitoring Page ---
