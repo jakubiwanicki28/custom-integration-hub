@@ -204,12 +204,12 @@ export function createHandler(ctx: OrgContext) {
     // Notion properties
     const properties: Record<string, unknown> = {
       Name: { title: [{ text: { content: pageTitle } }] },
-      Typ: { select: { name: typeLabel } },
-      Data: { date: { start: dateFormatted } },
+      Type: { select: { name: typeLabel } },
+      Date: { date: { start: dateFormatted } },
     };
 
     if (participantNames.length > 0) {
-      properties['Uczestnicy'] = {
+      properties['Participants'] = {
         multi_select: participantNames.map(name => ({ name })),
       };
     }
@@ -564,7 +564,7 @@ export function createHandler(ctx: OrgContext) {
 
     const properties: Record<string, unknown> = {
       Name: { title: {} },
-      Typ: {
+      Type: {
         select: {
           options: [
             { name: 'Weekly', color: 'blue' },
@@ -572,11 +572,11 @@ export function createHandler(ctx: OrgContext) {
           ],
         },
       },
-      Data: { date: {} },
-      Uczestnicy: { multi_select: {} },
+      Date: { date: {} },
+      Participants: { multi_select: {} },
     };
 
-    const db = await notion.createDatabase(parentPageId, 'Spotkania', properties);
+    const db = await notion.createDatabase(parentPageId, 'Meetings', properties);
     if (!db) {
       return { success: false, error: 'Nie udało się stworzyć database w Notion' };
     }
