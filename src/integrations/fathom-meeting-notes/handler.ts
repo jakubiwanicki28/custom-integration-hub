@@ -45,7 +45,12 @@ export function createHandler(ctx: OrgContext) {
   const log = ctx.log.child({ integration: INTEGRATION });
   const slack = ctx.clients.slack!;
   const notion = ctx.clients.notion!;
-  const cfg = ctx.integrationConfig as unknown as FathomMeetingConfig;
+  // Validate config structure at init time
+  const rawCfg = ctx.integrationConfig as Record<string, unknown>;
+  if (!rawCfg.meetingPrefix || !rawCfg.defaultChannel || !rawCfg.routes) {
+    throw new Error('fathom-meeting-notes config missing required fields: meetingPrefix, defaultChannel, routes');
+  }
+  const cfg = rawCfg as unknown as FathomMeetingConfig;
 
   // Idempotency
   const processedMeetings = new Map<string, number>();
@@ -84,7 +89,15 @@ export function createHandler(ctx: OrgContext) {
     }
 
     // Decode secret: strip "whsec_" prefix, base64-decode
-    const secretBytes = Buffer.from(webhookSecret.replace(/^whsec_/, ''), 'base64');
+    if (!webhookSecret.startsWith('whsec_')) {
+      log.error('Fathom webhook secret must start with "whsec_" — check env config');
+      return false;
+    }
+    const secretBytes = Buffer.from(webhookSecret.slice(6), 'base64');
+    if (secretBytes.length === 0) {
+      log.error('Fathom webhook secret base64 decode produced empty buffer');
+      return false;
+    }
 
     // Sign: "{id}.{timestamp}.{body}"
     const signedContent = `${msgId}.${timestamp}.${rawBody.toString('utf-8')}`;
@@ -348,24 +361,32 @@ export function createHandler(ctx: OrgContext) {
     if (payload.recording_start_time && payload.recording_end_time) {
       const startMs = new Date(payload.recording_start_time).getTime();
       const endMs = new Date(payload.recording_end_time).getTime();
-      const durationS = (endMs - startMs) / 1000;
-      if (durationS < MIN_MEETING_DURATION_S) {
-        log.info({ title, durationS }, 'Meeting too short — skipping');
-        metrics.track({ integration: INTEGRATION, org: ctx.org.id, event: 'skip', meta: { reason: 'too_short' } });
-        return { success: true, meetingTitle: title };
+      if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+        const durationS = (endMs - startMs) / 1000;
+        if (durationS < MIN_MEETING_DURATION_S) {
+          log.info({ title, durationS }, 'Meeting too short — skipping');
+          metrics.track({ integration: INTEGRATION, org: ctx.org.id, event: 'skip', meta: { reason: 'too_short' } });
+          return { success: true, meetingTitle: title };
+        }
+      } else {
+        log.warn({ start: payload.recording_start_time, end: payload.recording_end_time }, 'Invalid recording timestamps — skipping duration check');
       }
     }
 
     log.info({ title, type: route.channel.type, channel: route.channel.channelName }, 'Processing meeting');
 
     // 4. Resolve participant names
-    const participantNames = payload.calendar_invitees
-      .map(inv => resolveParticipantName(inv.email, inv.name))
-      .filter((name, i, arr) => arr.indexOf(name) === i); // unique
+    const participantNames = [...new Set(
+      (payload.calendar_invitees ?? []).map(inv => resolveParticipantName(inv.email, inv.name)),
+    )];
 
-    // 5. Format date
+    // 5. Format date (safe — fallback to current date if Fathom sends invalid timestamps)
     const meetingDate = payload.recording_start_time || payload.scheduled_start_time || payload.created_at;
-    const dateObj = new Date(meetingDate);
+    let dateObj = new Date(meetingDate);
+    if (isNaN(dateObj.getTime())) {
+      log.warn({ meetingDate }, 'Invalid meeting date — falling back to now');
+      dateObj = new Date();
+    }
     const dateFormatted = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
     const dateDisplay = dateObj.toLocaleDateString('pl-PL', {
       day: 'numeric', month: 'long', year: 'numeric',

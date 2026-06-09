@@ -126,8 +126,16 @@ function markdownToBlocks(markdown: string): NotionBlock[] {
     });
   }
 
-  // Notion API limits: max 100 blocks per request
-  return blocks.slice(0, 100);
+  // Notion API limits: max 100 blocks per request — truncate with warning marker
+  if (blocks.length > 100) {
+    const truncated = blocks.slice(0, 99);
+    truncated.push({
+      object: 'block', type: 'paragraph',
+      paragraph: { rich_text: [richText(`[... obcięto ${blocks.length - 99} bloków — limit Notion API]`, { italic: true })] },
+    });
+    return truncated;
+  }
+  return blocks;
 }
 
 // --- Client factory ---
