@@ -74,6 +74,27 @@
               "https://raport-akademia.vercel.app"
             ]
           }
+        },
+        {
+          "integrationId": "fathom-meeting-notes",
+          "status": "development",
+          "config": {
+            "meetingPrefix": "WWP:",
+            "routes": [
+              { "match": "Weekly", "channelId": "C0B8Y3QSETD", "channelName": "#weekly-calls", "type": "weekly" }
+            ],
+            "defaultChannel": { "channelId": "C0B92CBTET0", "channelName": "#marked-calls", "type": "meeting" },
+            "notionDatabaseId": "",
+            "teamMembers": {
+              "a.wykurz@wwpartners.pl": "Anna",
+              "m.nowacka@wwpartners.pl": "Gosia",
+              "m.wojcik@wwpartners.pl": "Magda",
+              "w.cieszykowska@wwpartners.pl": "Weronika",
+              "b.zurek@wwpartners.pl": "Basia",
+              "michal.warchal@velocy.co": "Michał",
+              "jakub.iwanicki@velocy.co": "Jakub"
+            }
+          }
         }
       ]
     },

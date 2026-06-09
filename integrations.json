@@ -59,6 +59,16 @@
       "requiredServices": ["slack", "github", "openrouter"],
       "triggers": ["Slack: /pr slash command"],
       "targets": ["GitHub: Pull Request", "Slack: response message"]
+    },
+    {
+      "id": "fathom-meeting-notes",
+      "name": "Fathom → Slack + Notion: Notatki ze spotkań",
+      "description": "Automatyczne podsumowania spotkań zespołowych z AI na Slacku i pełne notatki w Notion",
+      "type": "webhook",
+      "module": "./src/integrations/fathom-meeting-notes/index.js",
+      "requiredServices": ["slack", "notion", "openrouter"],
+      "triggers": ["Fathom: meeting recording ready webhook"],
+      "targets": ["Slack: meeting summary", "Notion: meeting notes page"]
     }
   ]
 }
