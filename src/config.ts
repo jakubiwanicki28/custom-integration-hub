@@ -53,6 +53,7 @@ export function loadOrgCredentials(envPrefix: string, requiredServices: string[]
   const needsSlack = requiredServices.includes('slack');
   const needsCloudtalk = requiredServices.includes('cloudtalk');
   const needsGithub = requiredServices.includes('github');
+  const needsNotion = requiredServices.includes('notion');
 
   return {
     attio: {
@@ -60,7 +61,7 @@ export function loadOrgCredentials(envPrefix: string, requiredServices: string[]
       webhookSecret: process.env[`${envPrefix}_ATTIO_WEBHOOK_SECRET`] || '',
     },
     slack: {
-      botToken: needsSlack ? (process.env[`${envPrefix}_SLACK_BOT_TOKEN`] || '') : '',
+      botToken: needsSlack ? requireEnv(`${envPrefix}_SLACK_BOT_TOKEN`) : '',
       signingSecret: process.env[`${envPrefix}_SLACK_SIGNING_SECRET`] || '',
     },
     cloudtalk: needsCloudtalk ? {
@@ -72,6 +73,13 @@ export function loadOrgCredentials(envPrefix: string, requiredServices: string[]
     } : undefined,
     vercel: process.env[`${envPrefix}_VERCEL_WEBHOOK_SECRET`] ? {
       webhookSecret: process.env[`${envPrefix}_VERCEL_WEBHOOK_SECRET`]!,
+    } : undefined,
+    fathom: process.env[`${envPrefix}_FATHOM_API_KEY`] ? {
+      apiKey: process.env[`${envPrefix}_FATHOM_API_KEY`]!,
+      webhookSecret: process.env[`${envPrefix}_FATHOM_WEBHOOK_SECRET`] || '',
+    } : undefined,
+    notion: needsNotion ? {
+      apiKey: requireEnv(`${envPrefix}_NOTION_API_KEY`),
     } : undefined,
   };
 }

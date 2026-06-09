@@ -11,6 +11,7 @@ import {
 import { createAttioClient } from './lib/attio.js';
 import { createSlackClient } from './lib/slack.js';
 import { createCloudTalkClient } from './lib/cloudtalk.js';
+import { createNotionClient } from './lib/notion.js';
 import { dashboardRouter } from './dashboard.js';
 import type { OrgContext } from './lib/org-context.js';
 
@@ -114,6 +115,9 @@ async function bootstrap() {
     const cloudtalkClient = credentials.cloudtalk
       ? createCloudTalkClient(credentials.cloudtalk.apiId, credentials.cloudtalk.apiKey, orgLog.child({ lib: 'cloudtalk' }))
       : undefined;
+    const notionClient = credentials.notion
+      ? createNotionClient(credentials.notion.apiKey, orgLog.child({ lib: 'notion' }))
+      : undefined;
 
     // Mount each active integration for this org
     for (const orgInt of mountableIntegrations) {
@@ -129,6 +133,7 @@ async function bootstrap() {
         if (svc === 'slack') return !slackClient;
         if (svc === 'cloudtalk') return !cloudtalkClient;
         if (svc === 'github') return !credentials.github;
+        if (svc === 'notion') return !notionClient;
         if (svc === 'openrouter') return false; // shared, always available
         return false;
       });
@@ -150,6 +155,7 @@ async function bootstrap() {
           attio: attioClient,
           slack: slackClient,
           cloudtalk: cloudtalkClient,
+          notion: notionClient,
         },
         credentials,
         integrationConfig: orgInt.config ?? {},

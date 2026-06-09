@@ -45,6 +45,12 @@ export interface GitHubClient {
   listOpenPullRequests(head: string, base: string): Promise<import('./github.js').GitHubPullRequest[]>;
 }
 
+export interface NotionClient {
+  createPage(databaseId: string, properties: Record<string, unknown>, markdown: string): Promise<{ id: string; url: string } | null>;
+  createDatabase(parentPageId: string, title: string, properties: Record<string, unknown>): Promise<{ id: string } | null>;
+  search(query: string, filter?: { property: string; value: string }): Promise<Array<{ id: string; title: string; url: string }>>;
+}
+
 // --- Organization context ---
 
 export interface OrgContext {
@@ -60,6 +66,7 @@ export interface OrgContext {
     slack?: SlackClient;
     cloudtalk?: CloudTalkClient;
     github?: GitHubClient;
+    notion?: NotionClient;
   };
   credentials: OrgCredentials;
   integrationConfig: Record<string, unknown>;
@@ -86,6 +93,8 @@ export interface OrgCredentials {
   cloudtalk?: { apiId: string; apiKey: string };
   github?: { token: string };
   vercel?: { webhookSecret: string };
+  fathom?: { apiKey: string; webhookSecret: string };
+  notion?: { apiKey: string };
 }
 
 // --- Registry types ---
