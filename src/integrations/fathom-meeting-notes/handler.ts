@@ -43,12 +43,12 @@ Zasady:
 
 export function createHandler(ctx: OrgContext) {
   const log = ctx.log.child({ integration: INTEGRATION });
-  const slack = ctx.clients.slack!;
+  const slack = ctx.clients.slack;  // optional — may be undefined for orgs without Slack
   const notion = ctx.clients.notion!;
   // Validate config structure at init time
   const rawCfg = ctx.integrationConfig as Record<string, unknown>;
-  if (!rawCfg.meetingPrefix || !rawCfg.defaultChannel || !rawCfg.routes) {
-    throw new Error('fathom-meeting-notes config missing required fields: meetingPrefix, defaultChannel, routes');
+  if (!rawCfg.notionDatabaseId) {
+    throw new Error('fathom-meeting-notes config missing required field: notionDatabaseId');
   }
   const cfg = rawCfg as unknown as FathomMeetingConfig;
 
@@ -123,19 +123,28 @@ export function createHandler(ctx: OrgContext) {
 
   // --- Meeting routing ---
 
-  function routeMeeting(title: string): { channel: MeetingChannel; cleanTitle: string } | null {
+  function routeMeeting(title: string): { channel: MeetingChannel | null; cleanTitle: string } | null {
     const trimmed = title.trim();
+
+    // No prefix configured → process ALL meetings (JI-style)
+    if (!cfg.meetingPrefix) {
+      return { channel: cfg.defaultChannel ?? null, cleanTitle: trimmed };
+    }
+
+    // Prefix mode (WW-style): skip meetings that don't match prefix
     if (!trimmed.startsWith(cfg.meetingPrefix)) return null;
 
     const cleanTitle = trimmed.slice(cfg.meetingPrefix.length).trim();
 
-    for (const route of cfg.routes) {
-      if (cleanTitle.toLowerCase().includes(route.match.toLowerCase())) {
-        return { channel: route, cleanTitle };
+    if (cfg.routes) {
+      for (const route of cfg.routes) {
+        if (cleanTitle.toLowerCase().includes(route.match.toLowerCase())) {
+          return { channel: route, cleanTitle };
+        }
       }
     }
 
-    return { channel: cfg.defaultChannel, cleanTitle };
+    return { channel: cfg.defaultChannel ?? null, cleanTitle };
   }
 
   // --- Participant name resolution ---
@@ -154,6 +163,7 @@ export function createHandler(ctx: OrgContext) {
     meetingType: string,
     participantNames: string[],
     dateFormatted: string,
+    overrideTitle?: string,
   ): Promise<string | null> {
     if (!cfg.notionDatabaseId) {
       log.warn('Notion database ID not configured — skipping page creation');
@@ -161,7 +171,7 @@ export function createHandler(ctx: OrgContext) {
     }
 
     const typeLabel = meetingType.charAt(0).toUpperCase() + meetingType.slice(1);
-    const pageTitle = `${typeLabel} — ${dateFormatted}`;
+    const pageTitle = overrideTitle || `${typeLabel} — ${dateFormatted}`;
 
     // Build markdown content
     const sections: string[] = [];
@@ -212,6 +222,21 @@ export function createHandler(ctx: OrgContext) {
       properties['Participants'] = {
         multi_select: participantNames.map(name => ({ name })),
       };
+    }
+
+    // Extra properties (JI-style config)
+    if (cfg.notionExtraProperties?.statusDefault) {
+      properties['Status'] = { select: { name: cfg.notionExtraProperties.statusDefault } };
+    }
+    if (cfg.notionExtraProperties?.includeFathomUrl && payload.share_url) {
+      properties['Fathom URL'] = { url: payload.share_url };
+    }
+    if (cfg.notionExtraProperties?.includeDuration && payload.recording_start_time && payload.recording_end_time) {
+      const startMs = new Date(payload.recording_start_time).getTime();
+      const endMs = new Date(payload.recording_end_time).getTime();
+      if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+        properties['Duration (min)'] = { number: Math.round((endMs - startMs) / 60000) };
+      }
     }
 
     const page = await notion.createPage(cfg.notionDatabaseId, properties, markdown);
@@ -334,6 +359,32 @@ export function createHandler(ctx: OrgContext) {
     };
   }
 
+  // --- AI title generation ---
+
+  async function generateMeetingTitle(
+    payload: FathomWebhookPayload,
+    participantNames: string[],
+  ): Promise<string> {
+    const parts: string[] = [];
+    if (payload.default_summary?.markdown_formatted) {
+      parts.push(payload.default_summary.markdown_formatted.slice(0, 500));
+    }
+    parts.push(`Participants: ${participantNames.join(', ')}`);
+
+    const result = await chatCompletion(config.openrouter.model, [
+      {
+        role: 'system',
+        content: 'Generate a short, descriptive meeting title (max 60 chars). '
+          + 'Format: "Topic — Participant1, Participant2" or "Project — Topic". '
+          + 'Use Polish if the content is in Polish, English otherwise. '
+          + 'Return ONLY the title, nothing else.',
+      },
+      { role: 'user', content: parts.join('\n\n') },
+    ]);
+
+    return result?.trim() || payload.meeting_title || payload.title || 'Spotkanie';
+  }
+
   // --- Core processing pipeline ---
 
   async function processCore(payload: FathomWebhookPayload): Promise<ProcessMeetingResult> {
@@ -373,7 +424,7 @@ export function createHandler(ctx: OrgContext) {
       }
     }
 
-    log.info({ title, type: route.channel.type, channel: route.channel.channelName }, 'Processing meeting');
+    log.info({ title, type: route.channel?.type ?? 'unrouted', channel: route.channel?.channelName ?? 'none' }, 'Processing meeting');
 
     // 4. Resolve participant names
     const participantNames = [...new Set(
@@ -392,10 +443,22 @@ export function createHandler(ctx: OrgContext) {
       day: 'numeric', month: 'long', year: 'numeric',
     });
 
-    // 6. Create Notion page (graceful failure)
+    // 6. Generate AI title if configured
+    let aiTitle: string | undefined;
+    if (cfg.generateTitle) {
+      try {
+        aiTitle = await generateMeetingTitle(payload, participantNames);
+        log.info({ aiTitle }, 'AI-generated meeting title');
+      } catch (err) {
+        log.warn({ err }, 'AI title generation failed — using default');
+      }
+    }
+
+    // 7. Create Notion page (graceful failure)
+    const meetingType = route.channel?.type ?? 'meeting';
     let notionUrl: string | null = null;
     try {
-      notionUrl = await createNotionPage(payload, route.channel.type, participantNames, dateFormatted);
+      notionUrl = await createNotionPage(payload, meetingType, participantNames, dateFormatted, aiTitle);
     } catch (err) {
       log.error({ err }, 'Failed to create Notion page — continuing without');
     }
@@ -416,27 +479,32 @@ export function createHandler(ctx: OrgContext) {
       log.error({ err }, 'AI re-processing failed — using raw Fathom summary');
     }
 
-    // 8. Build and post Slack message
-    const { blocks, fallbackText } = formatSlackMessage(
-      title.trim(), dateDisplay, summary, perPerson,
-      payload.share_url || payload.url,
-      notionUrl,
-    );
+    // 9. Build and post Slack message (if Slack is configured and channel exists)
+    let sent = true;
+    if (slack && route.channel?.channelId) {
+      const { blocks, fallbackText } = formatSlackMessage(
+        aiTitle || title.trim(), dateDisplay, summary, perPerson,
+        payload.share_url || payload.url,
+        notionUrl,
+      );
 
-    const sent = await slack.postMessage(route.channel.channelId, blocks, fallbackText);
-    if (!sent) {
-      log.error({ channel: route.channel.channelName }, 'Failed to post Slack message');
+      sent = await slack.postMessage(route.channel.channelId, blocks, fallbackText);
+      if (!sent) {
+        log.error({ channel: route.channel.channelName }, 'Failed to post Slack message');
+      }
+    } else {
+      log.info('Slack not configured or no channel — skipping Slack posting');
     }
 
-    // 9. Track metrics
+    // 10. Track metrics
     metrics.track({
       integration: INTEGRATION,
       org: ctx.org.id,
       event: sent ? 'success' : 'error',
       durationMs: Date.now() - trackStart,
       meta: {
-        meetingType: route.channel.type,
-        channel: route.channel.channelName,
+        meetingType: meetingType,
+        channel: route.channel?.channelName ?? 'none',
         hasNotion: String(!!notionUrl),
         participantCount: String(participantNames.length),
       },
@@ -444,9 +512,9 @@ export function createHandler(ctx: OrgContext) {
 
     return {
       success: sent,
-      meetingTitle: title.trim(),
-      meetingType: route.channel.type,
-      slackChannel: route.channel.channelName,
+      meetingTitle: aiTitle || title.trim(),
+      meetingType,
+      slackChannel: route.channel?.channelName,
       notionUrl: notionUrl ?? undefined,
       error: sent ? undefined : 'Slack message failed',
     };

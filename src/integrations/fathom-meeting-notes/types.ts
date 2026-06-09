@@ -54,12 +54,20 @@ export interface MeetingChannel {
   type: string;
 }
 
+export interface NotionExtraProperties {
+  statusDefault?: string;        // e.g. "Nowy" — set Status select on every new page
+  includeFathomUrl?: boolean;    // populate "Fathom URL" url property
+  includeDuration?: boolean;     // populate "Duration (min)" number property
+}
+
 export interface FathomMeetingConfig {
-  meetingPrefix: string;
-  routes: MeetingRoute[];
-  defaultChannel: MeetingChannel;
+  meetingPrefix?: string;          // undefined = process ALL meetings (no prefix filter)
+  routes?: MeetingRoute[];         // undefined = no routing
+  defaultChannel?: MeetingChannel; // undefined = no Slack
   notionDatabaseId: string;
   teamMembers: Record<string, string>; // email → short display name
+  generateTitle?: boolean;         // AI-generate descriptive title from content
+  notionExtraProperties?: NotionExtraProperties;
 }
 
 // --- Processing result ---

@@ -66,7 +66,7 @@
       "description": "Automatyczne podsumowania spotkań zespołowych z AI na Slacku i pełne notatki w Notion",
       "type": "webhook",
       "module": "./src/integrations/fathom-meeting-notes/index.js",
-      "requiredServices": ["slack", "notion", "openrouter"],
+      "requiredServices": ["notion", "openrouter"],
       "triggers": ["Fathom: meeting recording ready webhook"],
       "targets": ["Slack: meeting summary", "Notion: meeting notes page"]
     }

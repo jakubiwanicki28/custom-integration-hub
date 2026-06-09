@@ -184,6 +184,30 @@
           }
         }
       ]
+    },
+    {
+      "id": "ji-personal",
+      "name": "JI Personal",
+      "envPrefix": "JI",
+      "attioWorkspaceSlug": "",
+      "integrations": [
+        {
+          "integrationId": "fathom-meeting-notes",
+          "status": "development",
+          "config": {
+            "notionDatabaseId": "37aa9b10-2082-814f-8c3e-f5fd15c25acf",
+            "teamMembers": {
+              "jakub.iwanicki@velocy.co": "Jakub"
+            },
+            "generateTitle": true,
+            "notionExtraProperties": {
+              "statusDefault": "Nowy",
+              "includeFathomUrl": true,
+              "includeDuration": true
+            }
+          }
+        }
+      ]
     }
   ]
 }
