@@ -22,4 +22,7 @@ export interface CampaignConfig {
   dealPrefix: string;
   brevoListId?: number;
   createNote?: boolean;
+  // Person-only mode: skip Deal, List Entry, Brevo — only upsert Person + optional Note + optional Slack
+  personOnly?: boolean;
+  slackChannelId?: string;
 }
