@@ -152,6 +152,10 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
 
     res.status(200).json({ status: 'accepted' });
 
+    // Mark processed BEFORE starting — prevents poller/webhook race condition (duplicate notes).
+    // If processing fails, key expires via 1h TTL. Manual retry available via dashboard.
+    markCallProcessed(callId);
+
     try {
       log.info({ callId }, 'Processing call from webhook');
 
@@ -164,14 +168,13 @@ export function createHandler(ctx: OrgContext, transcribeCall: (call: CloudTalkC
       const result = await processCallCore(call);
 
       if (result.success) {
-        markCallProcessed(callId);
         log.info({ callId, personName: result.personName, dealName: result.dealName, notesCreated: result.notesCreated }, 'Webhook processing complete');
       } else {
-        log.warn({ callId, error: result.error }, 'Webhook processing failed, will retry via poller');
+        log.warn({ callId, error: result.error }, 'Webhook processing failed — idempotency key kept, will expire via TTL');
       }
     } catch (err) {
       metrics.track({ integration: 'cloudtalk-call-notes', org: ctx.org.id, event: 'error', meta: { reason: 'webhook_error' } });
-      log.error({ err, callId }, 'Unhandled error in webhook processing — will retry via poller');
+      log.error({ err, callId }, 'Unhandled error in webhook processing — idempotency key kept, will expire via TTL');
     }
   }
 

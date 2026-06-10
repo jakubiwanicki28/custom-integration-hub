@@ -57,14 +57,17 @@ export function createPoller(
 
         log.info({ callId: call.id, duration: call.duration, phone: call.externalNumber }, 'Auto-processing call');
 
+        // Mark processed BEFORE starting — prevents poller/webhook race condition (duplicate notes).
+        // If processing fails, key expires via 1h TTL. Manual retry available via dashboard.
+        handler.markCallProcessed(call.id);
+
         const result = await handler.processCallManual(call.id, call);
 
         if (result.success) {
-          handler.markCallProcessed(call.id);
           log.info({ callId: call.id, personName: result.personName, dealName: result.dealName, notes: result.notesCreated }, 'Auto-processed successfully');
           processed++;
         } else {
-          log.warn({ callId: call.id, error: result.error }, 'Auto-processing failed, will retry next cycle');
+          log.warn({ callId: call.id, error: result.error }, 'Auto-processing failed — idempotency key kept, will expire via TTL');
         }
       }
 

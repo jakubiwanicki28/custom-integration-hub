@@ -308,9 +308,8 @@ export function createHandler(ctx: OrgContext) {
     processedEvents.set(key, Date.now());
 
     syncBooking(email, startTime).catch(err => {
-      processedEvents.delete(key);
       metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'error', meta: { reason: 'unhandled_error' } });
-      log.error({ err, email }, 'Unhandled error in booking sync');
+      log.error({ err, email }, 'Unhandled error in booking sync — idempotency key kept, will expire via TTL');
     });
   }
 
@@ -354,9 +353,8 @@ export function createHandler(ctx: OrgContext) {
         processedEvents.delete(key);
       }
     }).catch(err => {
-      processedEvents.delete(key);
       metrics.track({ integration: 'calendly-booking-sync', org: ctx.org.id, event: 'error', meta: { reason: 'unhandled_notify_error' } });
-      log.error({ err, email }, 'Unhandled error in booking notify sync');
+      log.error({ err, email }, 'Unhandled error in booking notify sync — idempotency key kept, will expire via TTL');
     });
   }
 

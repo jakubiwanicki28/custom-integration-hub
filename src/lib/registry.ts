@@ -116,7 +116,7 @@ export async function importIntegrationModule(entry: IntegrationCatalogEntry): P
 
   // Path traversal protection: module must resolve within integrations directory
   const allowedBase = resolve(process.cwd(), process.env.NODE_ENV === 'production' ? 'dist/integrations' : 'src/integrations');
-  if (!modulePath.startsWith(allowedBase)) {
+  if (!modulePath.startsWith(allowedBase + '/')) {
     throw new Error(`Integration module path "${entry.module}" resolves outside allowed directory`);
   }
 
