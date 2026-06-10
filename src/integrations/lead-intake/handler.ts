@@ -5,12 +5,14 @@ import type { LeadIntakeRequest, LeadIntakeResponse, CampaignConfig } from './ty
 
 export function createHandler(ctx: OrgContext) {
   const attio = ctx.clients.attio;
+  const slack = ctx.clients.slack;
   const log = ctx.log.child({ integration: 'lead-intake' });
 
   const campaigns = (ctx.integrationConfig.campaigns ?? {}) as Record<string, CampaignConfig>;
   const dealOwnerId = ctx.integrationConfig.dealOwnerId as string;
   const dealStageLeadId = ctx.integrationConfig.dealStageLeadId as string;
   const brevoApiKey = process.env[`${ctx.org.envPrefix}_BREVO_API_KEY`] || '';
+  const workspaceSlug = ctx.org.attioWorkspaceSlug;
 
   // --- Input validation ---
 
@@ -138,6 +140,66 @@ export function createHandler(ctx: OrgContext) {
     });
   }
 
+  // --- Person-only Note helper (fire-and-forget) ---
+
+  async function createPersonOnlyNote(personId: string, data: LeadIntakeRequest): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const lines = [
+      `Źródło: ${data.source ?? data.campaign}`,
+      `Data zgłoszenia: ${data.submittedAt ?? new Date().toISOString()}`,
+      data.company ? `Firma/Studio: ${data.company}` : null,
+      `Email: ${data.email}`,
+      data.phone ? `Telefon: ${data.phone}` : null,
+    ].filter(Boolean).join('\n');
+
+    await attio.createNote({
+      parentObject: 'people',
+      parentRecordId: personId,
+      title: `Kontakt — formularz WWPartners.pl — ${today}`,
+      content: lines,
+    });
+  }
+
+  // --- Person-only Slack notification (fire-and-forget) ---
+
+  async function sendPersonOnlySlack(channelId: string, personId: string, data: LeadIntakeRequest): Promise<void> {
+    if (!slack) {
+      log.warn('Slack client not available, skipping notification');
+      return;
+    }
+
+    const fullName = `${data.firstName} ${data.lastName}`.trim();
+    const attioUrl = `https://app.attio.com/${workspaceSlug}/people/record/${personId}/overview`;
+
+    const blocks: import('../../lib/slack.js').SlackBlock[] = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: 'Nowy kontakt — Strona internetowa (beauty)', emoji: true },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*${fullName}*\n${data.email}\n${data.phone}`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Zobacz w Attio', emoji: true },
+            url: attioUrl,
+            style: 'primary',
+            action_id: 'open_attio_person',
+          },
+        ],
+      },
+    ];
+
+    await slack.postMessage(channelId, blocks, `Nowy kontakt: ${fullName} — ${data.email}`);
+  }
+
   // --- Main pipeline ---
 
   async function processLead(data: LeadIntakeRequest): Promise<LeadIntakeResponse> {
@@ -160,7 +222,31 @@ export function createHandler(ctx: OrgContext) {
       return { ok: false, error: 'Failed to create person in CRM' };
     }
 
+    // Person-only mode: skip Deal, List Entry, Brevo — only Note + Slack
+    if (campaignConfig.personOnly) {
+      if (campaignConfig.createNote) {
+        createPersonOnlyNote(personId, data).catch(err =>
+          log.warn({ err, personId }, 'Person-only note creation failed (non-blocking)'),
+        );
+      }
+
+      if (campaignConfig.slackChannelId) {
+        sendPersonOnlySlack(campaignConfig.slackChannelId, personId, data).catch(err =>
+          log.warn({ err, personId }, 'Person-only Slack notification failed (non-blocking)'),
+        );
+      }
+
+      log.info({ personId, campaign: data.campaign, email: data.email }, 'Person-only lead processed');
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'success', durationMs: Date.now() - trackStart, meta: { campaign: data.campaign, mode: 'person-only' } });
+      return { ok: true };
+    }
+
     // 2. Create Deal (include company in name if present)
+    if (!campaignConfig.dealPrefix || !campaignConfig.listId) {
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { reason: 'missing_deal_config', campaign: data.campaign } });
+      return { ok: false, error: 'Campaign missing dealPrefix or listId' };
+    }
+
     const fullName = `${data.firstName} ${data.lastName}`.trim();
     const dealName = data.company
       ? `${campaignConfig.dealPrefix} — ${fullName} — ${data.company}`

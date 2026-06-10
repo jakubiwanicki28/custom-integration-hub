@@ -64,6 +64,11 @@
                 "initialStageId": "270af996-b9aa-4fd1-8e7a-26e963c054fd",
                 "dealPrefix": "LP Raport",
                 "brevoListId": 6
+              },
+              "kontakt-web": {
+                "personOnly": true,
+                "createNote": true,
+                "slackChannelId": "C0B97A1GXGX"
               }
             },
             "dealOwnerId": "f654b36b-8011-4e00-b4df-9e7fcae5f62e",
@@ -71,7 +76,8 @@
             "allowedOrigins": [
               "https://akademiabiznesu.vercel.app",
               "https://akademiabiznesup2.vercel.app",
-              "https://raport-akademia.vercel.app"
+              "https://raport-akademia.vercel.app",
+              "https://form-web-lime.vercel.app"
             ]
           }
         },
