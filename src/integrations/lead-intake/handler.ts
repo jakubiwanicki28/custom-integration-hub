@@ -242,6 +242,11 @@ export function createHandler(ctx: OrgContext) {
     }
 
     // 2. Create Deal (include company in name if present)
+    if (!campaignConfig.dealPrefix || !campaignConfig.listId) {
+      metrics.track({ integration: 'lead-intake', org: ctx.org.id, event: 'error', durationMs: Date.now() - trackStart, meta: { reason: 'missing_deal_config', campaign: data.campaign } });
+      return { ok: false, error: 'Campaign missing dealPrefix or listId' };
+    }
+
     const fullName = `${data.firstName} ${data.lastName}`.trim();
     const dealName = data.company
       ? `${campaignConfig.dealPrefix} — ${fullName} — ${data.company}`

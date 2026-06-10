@@ -68,9 +68,7 @@
               "kontakt-web": {
                 "personOnly": true,
                 "createNote": true,
-                "slackChannelId": "C0B97A1GXGX",
-                "listId": "",
-                "dealPrefix": ""
+                "slackChannelId": "C0B97A1GXGX"
               }
             },
             "dealOwnerId": "f654b36b-8011-4e00-b4df-9e7fcae5f62e",

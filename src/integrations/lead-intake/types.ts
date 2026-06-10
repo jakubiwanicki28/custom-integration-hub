@@ -16,10 +16,11 @@ export interface LeadIntakeResponse {
 }
 
 export interface CampaignConfig {
-  listId: string;
+  // Required for deal-based campaigns, unused in personOnly mode
+  listId?: string;
   listStatusSlug?: string;
   initialStageId?: string;
-  dealPrefix: string;
+  dealPrefix?: string;
   brevoListId?: number;
   createNote?: boolean;
   // Person-only mode: skip Deal, List Entry, Brevo — only upsert Person + optional Note + optional Slack
